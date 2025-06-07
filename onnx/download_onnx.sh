@@ -1,0 +1,1 @@
+wget https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.22.0.tar.gz
