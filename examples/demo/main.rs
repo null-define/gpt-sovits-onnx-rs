@@ -6,6 +6,7 @@ use tokio::runtime::Runtime;
 
 // Example usage
 fn main() -> Result<(), GSVError> {
+    env_logger::init();
     let assets_dir = Path::new("/home/qiang/projects/GPT-SoVITS/onnx-patched/kaoyu");
 
     // Initialize model once
@@ -36,7 +37,9 @@ fn main() -> Result<(), GSVError> {
     // Example async usage (for comparison)
     let rt = Runtime::new()?;
     rt.block_on(async {
-        let (spec, stream) = model.run("你好呀，我们是一群追逐梦想的人！").await?;
+        let (spec, stream) = model
+            .run("今天天气很不错，天空全都是乌云，所以心里不开心。想要吃点好的犒劳一下自己。")
+            .await?;
         let mut writer = WavWriter::create("output_async.wav", spec)?;
         futures::pin_mut!(stream);
         while let Some(sample) = stream.next().await {
