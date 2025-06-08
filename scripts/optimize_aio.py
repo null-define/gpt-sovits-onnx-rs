@@ -7,7 +7,11 @@ import onnx
 from onnx import version_converter
 from onnxsim import simplify
 import onnxruntime
-from onnxoptimizer import optimize
+from onnxoptimizer import (
+    optimize,
+    get_available_passes,
+    get_fuse_and_elimination_passes,
+)
 from onnxruntime.transformers import float16
 
 # Configure logging
@@ -54,36 +58,39 @@ def process_model(file_path, output_path):
 
     # Load and convert model to opset 21
     model = onnx.load(file_path)
-    # model = optimize(model=model) # seems not work
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
 
-    # Simplify model
-    model, _ = simplify(model)
-    logger.info(f"ONNX simplification done for: {output_path}")
-
     # Apply slim optimization for non-vits models
     if "vits" not in output_path.lower():
+        # Simplify model
+        model, _ = simplify(model, include_subgraph=True)
+        logger.info(f"ONNX simplification done for: {output_path}")
         from onnxslim import slim, OptimizationSettings
 
         model = slim(model)
         logger.info(f"ONNX slim optimization done for: {output_path}")
 
     # Apply float16 conversion for decoder models, reduce mem and opt for arm
-    if "decoder" in output_path.lower():
-        model = float16.convert_float_to_float16(model, keep_io_types=True)
-        logger.info(f"FP16 conversion done for: {output_path}")
+    # has precision issue if fp16.so disabled
+    # if "decoder" in output_path.lower():
+    #     model = float16.convert_float_to_float16(model, keep_io_types=True)
+    #     logger.info(f"FP16 conversion done for: {output_path}")
+
+    model = optimize(
+        model=model, passes=get_fuse_and_elimination_passes(),
+    )
 
     onnx.save(model, output_path)  # Ensure model is saved
 
-    import onnxruntime as rt
-
-    sess_options = rt.SessionOptions()
-    # Set graph optimization level
-    sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
-    # To enable model serialization after graph optimization set this
-    sess_options.optimized_model_filepath = output_path
-    session = rt.InferenceSession(output_path, sess_options)
+    # use ort on-device optimizer to get better performance
+    # import onnxruntime as rt
+    # sess_options = rt.SessionOptions()
+    # # Set graph optimization level
+    # sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    # # To enable model serialization after graph optimization set this
+    # sess_options.optimized_model_filepath = output_path
+    # session = rt.InferenceSession(output_path, sess_options)
 
     return output_path
 

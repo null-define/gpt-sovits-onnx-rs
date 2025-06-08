@@ -64,6 +64,7 @@ impl TextPreprocessor {
                 // Fallback for long sequences
                 {
                     if !current_sentence.trim().is_empty() {
+                        debug!("current sentence {}", current_sentence);
                         sentences.push(current_sentence.trim().to_string());
                     }
                     current_sentence = String::new();
@@ -112,7 +113,6 @@ impl TextPreprocessor {
                 }
             }
         }
-
         sentences
     }
 

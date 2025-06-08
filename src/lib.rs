@@ -3,7 +3,8 @@ use futures::{StreamExt, stream::Stream};
 use hound::{WavReader, WavSpec, WavWriter};
 use log::{debug, error, info};
 use ndarray::{Array, ArrayView, Axis, Dim, IntoDimension, IxDyn, s};
-use ort::{execution_providers::CPUExecutionProvider, session::Session, value::Tensor};
+use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::{execution_providers::CPUExecutionProvider, value::Tensor};
 use std::{fs::File, path::Path, time::SystemTime};
 use tokio::task::block_in_place;
 
@@ -70,18 +71,31 @@ impl TTSModel {
         info!("Initializing TTSModel with ONNX sessions");
         let sovits = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_memory_pattern(false)?
             .commit_from_file(sovits_path)?;
         let ssl = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_memory_pattern(false)?
             .commit_from_file(ssl_path)?;
         let t2s_encoder = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_memory_pattern(false)?
             .commit_from_file(t2s_encoder_path)?;
         let t2s_fs_decoder = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_memory_pattern(false)?
             .commit_from_file(t2s_fs_decoder_path)?;
         let t2s_s_decoder = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_inter_threads(2)?
+            .with_intra_threads(4)?
+            .with_parallel_execution(true)?
+            .with_memory_pattern(false)?
             .commit_from_file(t2s_s_decoder_path)?;
 
         Ok(TTSModel {
