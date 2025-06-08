@@ -5,7 +5,7 @@ use log::{debug, error, info};
 use ndarray::{Array, ArrayView, Axis, Dim, IntoDimension, IxDyn, s};
 use ort::{execution_providers::CPUExecutionProvider, session::Session, value::Tensor};
 use std::{fs::File, path::Path, time::SystemTime};
-use tokio::runtime::Runtime;
+use tokio::task::block_in_place;
 
 mod error;
 mod phoneme;
@@ -95,6 +95,20 @@ impl TTSModel {
         })
     }
 
+    // Common function to run async code synchronously or asynchronously
+    fn run_async_in_context<F, T>(fut: F) -> Result<T, GSVError>
+    where
+        F: std::future::Future<Output = Result<T, GSVError>>,
+    {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => block_in_place(|| handle.block_on(fut)),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(fut)
+            }
+        }
+    }
+
     // Process reference audio and text (async)
     pub async fn process_reference<P: AsRef<Path>>(
         &mut self,
@@ -162,8 +176,7 @@ impl TTSModel {
         reference_audio_path: P,
         ref_text: &str,
     ) -> Result<(), GSVError> {
-        let rt = Runtime::new()?;
-        rt.block_on(self.process_reference(reference_audio_path, ref_text))
+        Self::run_async_in_context(self.process_reference(reference_audio_path, ref_text))
     }
 
     // Run inference with given text and return a stream (async)
@@ -344,8 +357,7 @@ impl TTSModel {
 
     // Synchronous wrapper for run
     pub fn run_sync(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
-        let rt = Runtime::new()?;
-        rt.block_on(async {
+        Self::run_async_in_context(async {
             let (spec, stream) = self.run(text).await?;
             let mut samples = Vec::new();
             futures::pin_mut!(stream);
