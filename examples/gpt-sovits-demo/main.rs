@@ -16,6 +16,7 @@ fn main() -> Result<(), GSVError> {
         assets_dir.join("kaoyu_t2s_encoder.onnx"),
         assets_dir.join("kaoyu_t2s_fs_decoder.onnx"),
         assets_dir.join("kaoyu_t2s_s_decoder.onnx"),
+        24
     )?;
 
     // Process reference audio and text synchronously

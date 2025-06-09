@@ -15,8 +15,8 @@ mod text_preprocessor;
 use crate::text_preprocessor::TextPreprocessor;
 pub use {error::GSVError, phoneme::*};
 
-const EARLY_STOP_NUM: usize = 2700;
-const T2S_DECODER_EOS: usize = 1024;
+const EARLY_STOP_NUM: usize = 1500; // Updated to match Python's max iteration limit
+const T2S_DECODER_EOS: usize = 1024; // Assuming EOS token remains consistent
 
 // Finds the index of the maximum value in a 2D tensor
 fn argmax(tensor: &ArrayView<f32, IxDyn>) -> (usize, usize) {
@@ -57,6 +57,7 @@ pub struct TTSModel {
     t2s_s_decoder: Session,
     ref_data: Option<ReferenceData>,
     text_preprocessor: TextPreprocessor,
+    num_layers: usize, // Added to track number of layers for k/v caches
 }
 
 impl TTSModel {
@@ -67,6 +68,7 @@ impl TTSModel {
         t2s_encoder_path: P,
         t2s_fs_decoder_path: P,
         t2s_s_decoder_path: P,
+        num_layers: usize, // Added to match Python's num_layers
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
         let sovits = Session::builder()?
@@ -106,6 +108,7 @@ impl TTSModel {
             t2s_s_decoder,
             ref_data: None,
             text_preprocessor: TextPreprocessor::init(),
+            num_layers,
         })
     }
 
@@ -221,6 +224,7 @@ impl TTSModel {
         // Create a stream for all normalized texts
         let normalized_texts = self.text_preprocessor.process(text.into());
         let ref_data = ref_data.clone();
+        let num_layers = self.num_layers;
         let stream = stream! {
             for normalized_text in normalized_texts {
                 info!("Processing normalized text: {}", normalized_text);
@@ -246,7 +250,7 @@ impl TTSModel {
                     "text_seq" => Tensor::from_array(text_seq.to_owned()).unwrap(),
                     "ref_bert" => Tensor::from_array(ref_data.ref_bert.to_owned()).unwrap(),
                     "text_bert" => Tensor::from_array(text_bert.to_owned()).unwrap(),
-                    "ssl_content" => Tensor::from_array(ref_data.ssl_content.to_owned()).unwrap(),
+                    "ssl_content" => Tensor::from_array(ref_data.ssl_content.to_owned()).unwrap()
                 ]) {
                     Ok(output) => output,
                     Err(e) => {
@@ -256,18 +260,26 @@ impl TTSModel {
                     }
                 };
                 info!("T2S Encoder time: {:?}", time.elapsed().unwrap());
-                let x = encoder_output["x"].try_extract_array::<f32>()?.to_owned();
+                let x = encoder_output["x"].try_extract_array::<f32>().unwrap().to_owned();
                 let prompts = encoder_output["prompts"]
-                    .try_extract_array::<i64>()?
+                    .try_extract_array::<i64>().unwrap()
                     .to_owned();
                 let prefix_len = prompts.dim()[1];
 
                 // T2S FS Decoder
                 let time = SystemTime::now();
-                let fs_decoder_output = match self.t2s_fs_decoder.run(ort::inputs![
+                let mut fs_decoder_inputs = ort::inputs![
                     "x" => Tensor::from_array(x).unwrap(),
                     "prompts" => Tensor::from_array(prompts).unwrap()
-                ]) {
+                ];
+                // Initialize k_cache and v_cache for each layer
+                // for i in 0..num_layers {
+                //     let k_cache = Array::<f32, _>::zeros((0, 1, 512));
+                //     let v_cache = Array::<f32, _>::zeros((0, 1, 512));
+                //     fs_decoder_inputs.push((format!("k_cache_{}", i).into(), Tensor::from_array(k_cache).unwrap().into()));
+                //     fs_decoder_inputs.push((format!("v_cache_{}", i).into(), Tensor::from_array(v_cache).unwrap().into()));
+                // }
+                let fs_decoder_output = match self.t2s_fs_decoder.run(fs_decoder_inputs) {
                     Ok(output) => output,
                     Err(e) => {
                         error!("T2S FS Decoder failed for '{}': {}", normalized_text, e);
@@ -276,25 +288,30 @@ impl TTSModel {
                     }
                 };
                 info!("T2S FS Decoder time: {:?}", time.elapsed().unwrap());
-                let (mut y, mut k, mut v, mut y_emb, x_example) = (
-                    fs_decoder_output["y"].try_extract_array::<i64>()?.to_owned(),
-                    fs_decoder_output["k"].try_extract_array::<f32>()?.to_owned(),
-                    fs_decoder_output["v"].try_extract_array::<f32>()?.to_owned(),
-                    fs_decoder_output["y_emb"].try_extract_array::<f32>()?.to_owned(),
-                    fs_decoder_output["x_example"].try_extract_array::<f32>()?.to_owned(),
-                );
+                let mut y = fs_decoder_output["y"].try_extract_array::<i64>().unwrap().to_owned();
+                let mut k_caches: Vec<Array<f32, IxDyn>> = (0..num_layers)
+                    .map(|i| fs_decoder_output[format!("k_cache_{}", i)].try_extract_array::<f32>().unwrap().to_owned())
+                    .collect();
+                let mut v_caches: Vec<Array<f32, IxDyn>> = (0..num_layers)
+                    .map(|i| fs_decoder_output[format!("v_cache_{}", i)].try_extract_array::<f32>().unwrap().to_owned())
+                    .collect();
+                let mut y_emb = fs_decoder_output["y_emb"].try_extract_array::<f32>().unwrap().to_owned();
+                let mut x_example = fs_decoder_output["x_example"].try_extract_array::<f32>().unwrap().to_owned();
 
                 // T2S S Decoder
                 let time = SystemTime::now();
                 let mut idx = 1;
                 let pred_semantic = loop {
-                    let s_decoder_output = match self.t2s_s_decoder.run(ort::inputs![
-                        "iy" => Tensor::from_array(y.to_owned()).unwrap(),
-                        "ik" => Tensor::from_array(k.to_owned()).unwrap(),
-                        "iv" => Tensor::from_array(v.to_owned()).unwrap(),
-                        "iy_emb" => Tensor::from_array(y_emb.to_owned()).unwrap(),
-                        "ix_example" => Tensor::from_array(x_example.to_owned()).unwrap()
-                    ]) {
+                    let mut s_decoder_inputs = ort::inputs![
+                        "y.1" => Tensor::from_array(y.to_owned()).unwrap(),
+                        "y_emb.1" => Tensor::from_array(y_emb.to_owned()).unwrap(),
+                        "x_example" => Tensor::from_array(x_example.to_owned()).unwrap()
+                    ];
+                    for i in 0..num_layers {
+                        s_decoder_inputs.push((format!("k_cache_{}.1", i).into(), Tensor::from_array(k_caches[i].to_owned()).unwrap().into()));
+                        s_decoder_inputs.push((format!("v_cache_{}.1", i).into(), Tensor::from_array(v_caches[i].to_owned()).unwrap().into()));
+                    }
+                    let s_decoder_output = match self.t2s_s_decoder.run(s_decoder_inputs) {
                         Ok(output) => output,
                         Err(e) => {
                             error!("T2S S Decoder failed for '{}': {}", normalized_text, e);
@@ -303,23 +320,18 @@ impl TTSModel {
                         }
                     };
 
-                    let (y_new, k_new, v_new, y_emb_new, samples, logits) = (
-                        s_decoder_output["y"].try_extract_array::<i64>()?.to_owned(),
-                        s_decoder_output["k"].try_extract_array::<f32>()?.to_owned(),
-                        s_decoder_output["v"].try_extract_array::<f32>()?.to_owned(),
-                        s_decoder_output["y_emb"].try_extract_array::<f32>()?.to_owned(),
-                        s_decoder_output["samples"].try_extract_array::<i32>()?.to_owned(),
-                        s_decoder_output["logits"].try_extract_array::<f32>()?.to_owned(),
-                    );
-
-                    y = y_new;
-                    k = k_new;
-                    v = v_new;
-                    y_emb = y_emb_new;
+                    y = s_decoder_output["y"].try_extract_array::<i64>().unwrap().to_owned();
+                    for i in 0..num_layers {
+                        k_caches[i] = s_decoder_output[format!("k_cache_{}", i)].try_extract_array::<f32>().unwrap().to_owned();
+                        v_caches[i] = s_decoder_output[format!("v_cache_{}", i)].try_extract_array::<f32>().unwrap().to_owned();
+                    }
+                    y_emb = s_decoder_output["y_emb"].try_extract_array::<f32>().unwrap().to_owned();
+                    let logits = s_decoder_output["logits"].try_extract_array::<f32>().unwrap().to_owned();
+                    let samples = s_decoder_output["samples"].try_extract_array::<i32>().unwrap().to_owned();
 
                     debug!("S Decoder iteration {}: y shape = {:?}", idx, y.shape());
                     if idx >= 1500
-                        || (y.dim()[1] - prefix_len) > EARLY_STOP_NUM
+                        || (y.shape()[1] - prefix_len) > EARLY_STOP_NUM
                         || argmax(&logits.view()).1 == T2S_DECODER_EOS
                         || samples
                             .get((0, 0).into_dimension())

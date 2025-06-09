@@ -24,6 +24,7 @@
 |            | + onnxsim        | 12.919s            | 446.199ms   | 111   |
 |            | + optimize       | 9.601s             | 322.142ms   | 92    |
 |            | optimize\_aio.py | 4.903s             | 281.727ms   | 81    |
+|            | + 新模型转换脚本  | 1.32s              | 340.212ms   | 84    |
 | **Mobile** | fp16 baseline    | 4.091s             | 1.018s      | 83    |
 |            | + NNAPI (slower) | 5.337s             | 1.024s      | 77    |
 
