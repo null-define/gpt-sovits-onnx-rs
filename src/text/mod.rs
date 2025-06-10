@@ -7,7 +7,6 @@ use std::{
 use jieba_rs::Jieba;
 
 use pest::Parser;
-use tokenizers::pre_tokenizers;
 
 pub mod dict;
 pub mod g2pw;
@@ -431,7 +430,7 @@ pub struct TextProcessor {
 }
 
 impl TextProcessor {
-    pub fn get_phone(&mut self, text: &str) -> anyhow::Result<(Vec<Vec<i64>>)> {
+    pub fn get_phone(&mut self, text: &str) -> anyhow::Result<Vec<Vec<i64>>> {
         let mut phone_seq = Vec::new();
 
         let mut phone_builder = PhoneBuilder::new();
@@ -457,7 +456,7 @@ impl TextProcessor {
 
                         zh.generate_pinyin(processor);
                         match zh.build_phone() {
-                            Ok((t)) => {
+                            Ok(t) => {
                                 phone_seq.push(t);
                             }
                             Err(e) => {
@@ -475,7 +474,7 @@ impl TextProcessor {
                         log::debug!("en phones: {:?}", en.phones);
                         en.generate_phones(processor);
                         match en.build_phone() {
-                            Ok((t)) => {
+                            Ok(t) => {
                                 phone_seq.push(t);
                             }
                             Err(e) => {
@@ -502,7 +501,7 @@ impl TextProcessor {
         if phone_seq.is_empty() {
             return Err(anyhow::anyhow!("{text} get phone_seq is empty"));
         }
-        Ok((phone_seq))
+        Ok(phone_seq)
     }
 }
 
@@ -563,7 +562,7 @@ impl ZhSentence {
         }
     }
 
-    fn build_phone(&self) -> anyhow::Result<(Vec<i64>)> {
+    fn build_phone(&self) -> anyhow::Result<Vec<i64>> {
         Ok(self.phones_ids.clone())
     }
 }
@@ -629,7 +628,7 @@ impl EnSentence {
         log::debug!("EnSentence phones_ids: {:?}", self.phones_ids);
     }
 
-    fn build_phone(&self) -> anyhow::Result<(Vec<i64>)> {
+    fn build_phone(&self) -> anyhow::Result<Vec<i64>> {
         Ok(self.phones_ids.clone())
     }
 }

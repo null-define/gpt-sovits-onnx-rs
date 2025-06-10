@@ -8,8 +8,7 @@ pub mod zh {
     use crate::text::PhoneBuilder;
 
     use super::*;
-    #[cfg(test)]
-    use pest::Parser;
+    
     use pest::iterators::Pair;
 
     fn parse_pn(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
@@ -337,8 +336,7 @@ pub mod en {
 
     use super::super::SEPARATOR;
     use super::*;
-    #[cfg(test)]
-    use pest::Parser;
+    
     use pest::iterators::Pair;
 
     fn parse_pn(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {

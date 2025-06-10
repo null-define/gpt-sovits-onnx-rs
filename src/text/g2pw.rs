@@ -1,5 +1,4 @@
-use ndarray::{Array, ArrayView, Dim, IntoDimension, IxDyn, s};
-use ndarray::{Array1, Array2, ArrayD, Axis};
+use ndarray::Array;
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::{execution_providers::CPUExecutionProvider, value::Tensor};
 use std::path::Path;
@@ -348,7 +347,7 @@ impl G2PWConverter {
             .commit_from_file(model_path)?;
 
         Ok(Self {
-            model: Some((session)),
+            model: Some(session),
             tokenizers: Some(tokenizer),
         })
     }

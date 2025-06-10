@@ -1,9 +1,9 @@
 use async_stream::stream;
 use futures::{StreamExt, stream::Stream};
-use hound::{WavReader, WavSpec, WavWriter};
+use hound::{WavReader, WavSpec};
 use jieba_rs::Jieba;
 use log::{debug, error, info};
-use ndarray::{Array, ArrayView, Axis, Dim, IntoDimension, IxDyn, s};
+use ndarray::{Array, Axis, Dim, IntoDimension, IxDyn, s};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::{execution_providers::CPUExecutionProvider, value::Tensor};
 use std::str::FromStr;
@@ -143,7 +143,7 @@ impl TTSModel {
         let ref_bert = Array::<f32, _>::zeros((ref_seq.shape()[1], 1024));
 
         // Read and resample reference audio
-        let mut file = File::open(&reference_audio_path)
+        let file = File::open(&reference_audio_path)
             .map_err(|e| GSVError::from(format!("Failed to open reference audio: {}", e)))?;
         let wav_reader = WavReader::new(file)?;
         let spec = wav_reader.spec();
@@ -267,7 +267,7 @@ impl TTSModel {
 
                 // T2S FS Decoder
                 let time = SystemTime::now();
-                let mut fs_decoder_inputs = ort::inputs![
+                let fs_decoder_inputs = ort::inputs![
                     "x" => Tensor::from_array(x).unwrap(),
                     "prompts" => Tensor::from_array(prompts).unwrap()
                 ];
@@ -295,7 +295,7 @@ impl TTSModel {
                     .map(|i| fs_decoder_output[format!("v_cache_{}", i)].try_extract_array::<f32>().unwrap().to_owned())
                     .collect();
                 let mut y_emb = fs_decoder_output["y_emb"].try_extract_array::<f32>().unwrap().to_owned();
-                let mut x_example = fs_decoder_output["x_example"].try_extract_array::<f32>().unwrap().to_owned();
+                let x_example = fs_decoder_output["x_example"].try_extract_array::<f32>().unwrap().to_owned();
 
                 // T2S S Decoder
                 let time = SystemTime::now();

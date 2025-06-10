@@ -1,5 +1,5 @@
 
-use ndarray::{Array, ArrayView, Axis, Dim, IntoDimension, IxDyn, s};
+use ndarray::{ArrayView, IntoDimension, IxDyn};
 
 // Finds the index of the maximum value in a 2D tensor
 pub fn argmax(tensor: &ArrayView<f32, IxDyn>) -> (usize, usize) {
