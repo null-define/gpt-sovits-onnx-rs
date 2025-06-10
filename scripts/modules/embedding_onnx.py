@@ -29,7 +29,6 @@ class TokenEmbedding(nn.Module):
 
     def forward(self, x: torch.Tensor):
         x = self.word_embeddings(x)
-        x = self.dropout(x)
         return x
 
 
@@ -75,4 +74,4 @@ class SinePositionalEmbedding(nn.Module):
         self.extend_pe(x)
         output = x.unsqueeze(-1) if x.ndim == 2 else x
         output = output * self.x_scale + self.alpha * self.pe[:, : x.size(1)]
-        return self.dropout(output)
+        return output

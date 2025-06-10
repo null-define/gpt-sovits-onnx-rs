@@ -119,6 +119,8 @@ class T2SFirstStageDecoder(nn.Module):
         y = prompt
         x_example = x[:, :, 0] * 0.0
         y_emb = self.ar_audio_embedding(y)
+        y_emb_cache = y_emb
+
         y_pos = self.ar_audio_position(y_emb)
         xy_pos = torch.concat([x, y_pos], dim=1)
 
@@ -144,7 +146,7 @@ class T2SFirstStageDecoder(nn.Module):
         samples = sample(logits[0], y, top_k=self.top_k, top_p=1.0, repetition_penalty=1.35)[0].unsqueeze(0)
 
         y = torch.concat([y, samples], dim=1)
-        return y, k_cache, v_cache, y_emb, x_example
+        return y, k_cache, v_cache, y_emb_cache, x_example
 
 class T2SStageDecoder(nn.Module):
     def __init__(
@@ -172,6 +174,8 @@ class T2SStageDecoder(nn.Module):
 
     def forward(self, y, k_cache, v_cache, y_emb, x_example):
         y_emb = torch.cat([y_emb, self.ar_audio_embedding(y[:, -1:])], 1)
+        y_emb_cache = y_emb
+
         y_pos = self.ar_audio_position(y_emb)
         xy_pos = y_pos[:, -1:]
         y_example = y_pos[:, :, 0] * 0.0
@@ -183,7 +187,7 @@ class T2SStageDecoder(nn.Module):
         samples = sample(logits[0], y, top_k=self.top_k, top_p=1.0, repetition_penalty=1.35)[0].unsqueeze(0)
 
         y = torch.concat([y, samples], dim=1)
-        return y, k_cache, v_cache, y_emb, logits, samples
+        return y, k_cache, v_cache, y_emb_cache, logits, samples
 
 class Text2SemanticDecoder(nn.Module):
     def __init__(self, config, norm_first=False, top_k=3):
@@ -201,15 +205,15 @@ class Text2SemanticDecoder(nn.Module):
         assert self.EOS == self.vocab_size - 1
         self.bert_proj = nn.Linear(1024, self.embedding_dim)
         self.ar_text_embedding = TokenEmbedding(self.embedding_dim, self.phoneme_vocab_size, self.p_dropout)
-        self.ar_text_position = SinePositionalEmbedding(self.embedding_dim, dropout=0.1, scale=False, alpha=True)
+        self.ar_text_position = SinePositionalEmbedding(self.embedding_dim, dropout=0.0, scale=False, alpha=True)
         self.ar_audio_embedding = TokenEmbedding(self.embedding_dim, self.vocab_size, self.p_dropout)
-        self.ar_audio_position = SinePositionalEmbedding(self.embedding_dim, dropout=0.1, scale=False, alpha=True)
+        self.ar_audio_position = SinePositionalEmbedding(self.embedding_dim, dropout=0.0, scale=False, alpha=True)
         self.h = TransformerEncoder(
             TransformerEncoderLayer(
                 d_model=self.model_dim,
                 nhead=self.num_head,
                 dim_feedforward=self.model_dim * 4,
-                dropout=0.1,
+                dropout=0.0,
                 batch_first=True,
                 norm_first=norm_first,
             ),

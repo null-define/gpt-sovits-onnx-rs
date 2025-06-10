@@ -1,43 +1,28 @@
 use async_stream::stream;
 use futures::{StreamExt, stream::Stream};
 use hound::{WavReader, WavSpec, WavWriter};
+use jieba_rs::Jieba;
 use log::{debug, error, info};
 use ndarray::{Array, ArrayView, Axis, Dim, IntoDimension, IxDyn, s};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::{execution_providers::CPUExecutionProvider, value::Tensor};
+use std::str::FromStr;
+use std::sync::Arc;
 use std::{fs::File, path::Path, time::SystemTime};
 use tokio::task::block_in_place;
 
 mod error;
-mod phoneme;
-mod text_preprocessor;
+mod text;
+mod utils;
 
-use crate::text_preprocessor::TextPreprocessor;
-pub use {error::GSVError, phoneme::*};
+use utils::*;
+
+use crate::text::TextProcessor;
+use crate::text::g2pw::G2PWConverter;
+pub use error::GSVError;
 
 const EARLY_STOP_NUM: usize = 1500; // Updated to match Python's max iteration limit
 const T2S_DECODER_EOS: usize = 1024; // Assuming EOS token remains consistent
-
-// Finds the index of the maximum value in a 2D tensor
-fn argmax(tensor: &ArrayView<f32, IxDyn>) -> (usize, usize) {
-    let mut max_index = (0, 0);
-    let mut max_value = tensor
-        .get(IxDyn::zeros(2))
-        .copied()
-        .unwrap_or(f32::NEG_INFINITY);
-
-    for i in 0..tensor.shape()[0] {
-        for j in 0..tensor.shape()[1] {
-            if let Some(value) = tensor.get((i, j).into_dimension()) {
-                if *value > max_value {
-                    max_value = *value;
-                    max_index = (i, j);
-                }
-            }
-        }
-    }
-    max_index
-}
 
 // Struct to hold reference data
 #[derive(Clone)]
@@ -50,19 +35,20 @@ pub struct ReferenceData {
 
 // Struct to hold model sessions and reference data
 pub struct TTSModel {
+    text_processor: TextProcessor,
     sovits: Session,
     ssl: Session,
     t2s_encoder: Session,
     t2s_fs_decoder: Session,
     t2s_s_decoder: Session,
     ref_data: Option<ReferenceData>,
-    text_preprocessor: TextPreprocessor,
     num_layers: usize, // Added to track number of layers for k/v caches
 }
 
 impl TTSModel {
     // Initialize the model with ONNX sessions
     pub fn new<P: AsRef<Path>>(
+        g2pw_path: P,
         sovits_path: P,
         ssl_path: P,
         t2s_encoder_path: P,
@@ -71,6 +57,11 @@ impl TTSModel {
         num_layers: usize, // Added to match Python's num_layers
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
+        // let g2pw = Session::builder()?
+        //     .with_execution_providers([CPUExecutionProvider::default().build()])?
+        //     .with_optimization_level(GraphOptimizationLevel::Level3)?
+        //     .with_memory_pattern(false)?
+        //     .commit_from_file(g2pw_path)?;
         let sovits = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
@@ -99,15 +90,23 @@ impl TTSModel {
             .with_parallel_execution(true)?
             .with_memory_pattern(false)?
             .commit_from_file(t2s_s_decoder_path)?;
+        let tokenizer =
+            Arc::new(tokenizers::Tokenizer::from_str(text::g2pw::G2PW_TOKENIZER).unwrap());
+
+        let text_processor = TextProcessor {
+            jieba: Jieba::new(),
+            g2pw: G2PWConverter::new(g2pw_path, tokenizer)?,
+            symbols: text::symbols::SYMBOLS.clone(),
+        };
 
         Ok(TTSModel {
+            text_processor,
             sovits,
             ssl,
             t2s_encoder,
             t2s_fs_decoder,
             t2s_s_decoder,
             ref_data: None,
-            text_preprocessor: TextPreprocessor::init(),
             num_layers,
         })
     }
@@ -134,10 +133,11 @@ impl TTSModel {
     ) -> Result<(), GSVError> {
         info!("Processing reference audio and text: {}", ref_text);
         // Text processing
-        let mut extractor = PhonemeExtractor::default();
-        extractor.push_str(ref_text);
-        let ref_seq = extractor.get_phone_ids();
-        debug!("Reference phoneme extractor: {:?}", extractor);
+        // let mut extractor = PhonemeExtractor::default();
+        // extractor.push_str(ref_text);
+        // let ref_seq = extractor.get_phone_ids();
+        let ref_seq = self.text_processor.get_phone(ref_text)?.concat();
+        debug!("Reference phoneme: {:?}", ref_seq);
         let ref_seq = Array::from_shape_vec((1, ref_seq.len()), ref_seq)
             .map_err(|e| GSVError::from(format!("Failed to create ref_seq array: {}", e)))?;
         let ref_bert = Array::<f32, _>::zeros((ref_seq.shape()[1], 1024));
@@ -222,21 +222,20 @@ impl TTSModel {
         };
 
         // Create a stream for all normalized texts
-        let normalized_texts = self.text_preprocessor.process(text.into());
+        let text_seqs = self.text_processor.get_phone(text.into())?;
+
         let ref_data = ref_data.clone();
         let num_layers = self.num_layers;
         let stream = stream! {
-            for normalized_text in normalized_texts {
-                info!("Processing normalized text: {}", normalized_text);
+            for text_seq in text_seqs {
                 // Text processing
-                let mut extractor = PhonemeExtractor::default();
-                extractor.push_str(&normalized_text);
-                let text_seq = extractor.get_phone_ids();
-                debug!("Text phoneme extractor: {:?}", extractor);
+                debug!("Text phoneme: {:?}", text_seq);
+                // let text_seq = extractor.get_phone_ids();
+                // debug!("Text phoneme extractor: {:?}", extractor);
                 let text_seq = match Array::from_shape_vec((1, text_seq.len()), text_seq) {
                     Ok(arr) => arr,
                     Err(e) => {
-                        error!("Failed to create text_seq array for '{}': {}", normalized_text, e);
+                        error!("Failed to create text_seq array': {}", e);
                         yield Err(GSVError::from(format!("Failed to create text_seq array: {}", e)));
                         return;
                     }
@@ -254,7 +253,7 @@ impl TTSModel {
                 ]) {
                     Ok(output) => output,
                     Err(e) => {
-                        error!("T2S Encoder failed for '{}': {}", normalized_text, e);
+                        error!("T2S Encoder failed: {}", e);
                         yield Err(GSVError::from(format!("T2S Encoder failed: {}", e)));
                         return;
                     }
@@ -282,7 +281,7 @@ impl TTSModel {
                 let fs_decoder_output = match self.t2s_fs_decoder.run(fs_decoder_inputs) {
                     Ok(output) => output,
                     Err(e) => {
-                        error!("T2S FS Decoder failed for '{}': {}", normalized_text, e);
+                        error!("T2S FS Decoder failed: {}", e);
                         yield Err(GSVError::from(format!("T2S FS Decoder failed: {}", e)));
                         return;
                     }
@@ -314,7 +313,7 @@ impl TTSModel {
                     let s_decoder_output = match self.t2s_s_decoder.run(s_decoder_inputs) {
                         Ok(output) => output,
                         Err(e) => {
-                            error!("T2S S Decoder failed for '{}': {}", normalized_text, e);
+                            error!("T2S S Decoder failed: {}", e);
                             yield Err(GSVError::from(format!("T2S S Decoder failed: {}", e)));
                             return;
                         }
@@ -361,7 +360,7 @@ impl TTSModel {
                 ]) {
                     Ok(output) => output,
                     Err(e) => {
-                        error!("SoVITS failed for '{}': {}", normalized_text, e);
+                        error!("SoVITS failed: {}", e);
                         yield Err(GSVError::from(format!("SoVITS failed: {}", e)));
                         return;
                     }

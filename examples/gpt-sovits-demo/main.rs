@@ -11,6 +11,7 @@ fn main() -> Result<(), GSVError> {
 
     // Initialize model once
     let mut model = TTSModel::new(
+        assets_dir.join("g2pW.onnx"),
         assets_dir.join("kaoyu_vits.onnx"),
         assets_dir.join("kaoyu_ssl.onnx"),
         assets_dir.join("kaoyu_t2s_encoder.onnx"),

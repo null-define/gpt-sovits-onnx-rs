@@ -155,7 +155,7 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attn = MultiheadAttention(
             d_model,
             nhead,
-            dropout=dropout,
+            dropout=0,
             batch_first=batch_first,
             linear1_cls=linear1_self_attention_cls,
             linear2_cls=linear2_self_attention_cls,
@@ -228,11 +228,11 @@ class TransformerEncoderLayer(nn.Module):
             v_cache=v_cache,
             first_infer=first_infer,
         )
-        return self.dropout1(x), k, v
+        return x, k, v
 
     def _ff_block(self, x: Tensor) -> Tensor:
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        return self.dropout2(x)
+        x = self.linear2(self.activation(self.linear1(x)))
+        return x
 
 class AdaptiveLayerNorm(nn.Module):
     def __init__(self, d_model, norm) -> None:
