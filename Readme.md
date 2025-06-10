@@ -4,18 +4,22 @@
 目前暂不支持 V3/V4 版本，原因在于其计算复杂度较高，尚难在通用 CPU 上实现令人满意的实时性能。
 
 
-项目将作为个人全平台chatbot（尚未开源）的TTS引擎，为在Android侧实现低延迟、高可用的TTS能力。后续将围绕实时性进行优化（可能牺牲更大的精度）。
+项目将作为个人全平台chatbot（尚未开源）的TTS引擎，为在Android/PC侧实现低延迟、高可用的TTS能力。后续将围绕实时性进行优化（可能牺牲更大的精度）。
 
-如果后续出现了更加高效的实现（比如如果MNN/ExecuTorch的版本切更快），本项目将停止开发。
+如果后续出现了更加高效的实现（比如如果出现了MNN/ExecuTorch的实现，且效果更好也更快），本项目将停止开发。
 
-⚠️ 注意，当前项目仍处于开发阶段，API和效果仍然不稳定，将在chatbot的后续开发中更改、逐渐修复和优化
+⚠️ 注意，当前项目仍处于开发阶段，API和效果仍不稳定，将在chatbot的后续开发中更改、逐渐修复和优化
 
 ---
 
 ## 当前问题
 
-1. 英文/中英混合能力较差，考虑后续更改方式。
-2. 长文本推理较差，耗时较高，目前采用了内置切分，
+1. 英文/中英混合能力较差，目前部分采用了GPT-SoVITS-Rust的逻辑，使用G2pw处理中文，在一定程度上有所改善，但是仍有差距。
+2. 输出效果稳定性仍较差。
+
+## 性能信息
+
+参考 [perf_record](doc/perf_record.md)
 
 ## 项目组件
 
@@ -43,11 +47,15 @@
 
 * ✅ **Android 平台 + 高性能需求**：推荐使用 `sherpa-onnx`
 * ✅ **x86 平台（Linux/Windows, CUDA/CPU）+ 高拟真度需求**：推荐 [`GPT-SoVITS-Rust`](https://github.com/second-state/gpt_sovits_rs)
-* ✅ **Android 平台（CPU）+ 高拟真需求**：可以使用本项目（GPT-SOVITS-ONNX-RS）
+* ✅ **Android 平台 + x86（CPU）+ 高拟真需求**：可以使用本项目（GPT-SOVITS-ONNX-RS）
 
 ---
 
 ## 构建指南
+
+### 模型转换 
+
+参考 [scripts/Readme.md](scripts/README.md)
 
 ### x86 平台构建
 
