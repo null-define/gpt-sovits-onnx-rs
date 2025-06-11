@@ -75,8 +75,8 @@ cargo build --release
 
 1. 安装 CMake ≥ 3.28（建议使用 Conda 环境安装以绕过旧系统限制）。
 2. 下载并配置 Android NDK 与 SDK，设置必要的环境变量。
-3. 执行 `onnx/build_android` 目录下的脚本，构建 ONNX Runtime。
-4. 运行 `build_for_android.sh`，生成 Android 平台下的可执行程序和动态库。
+3. 运行 `build_for_android.sh`，一键生成下载onnxruntime源代码，编译onnxruntime，并编译 Android 平台下的可执行程序和动态库。
+4. 后续构建，可以直接使用cargo build --target aarch64-linux-android --release --features jni
 
 ---
 

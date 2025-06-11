@@ -3,11 +3,22 @@ name = "gpt-sovits-onnx-rs"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-android = ["ort/load-dynamic"]
+[lib]
+crate-type = ["rlib"] # Supports rlib  outputs
+
+[[example]]
+name = "gpt_sovits_demo_jni"
+crate-type = ["cdylib"] # cdylib
+required-features = ["jni"]
+
 
 [dependencies]
-ort = { version = "2.0.0-rc.10", features = ["ndarray", "download-binaries", "copy-dylibs", "half"] }
+ort = { version = "2.0.0-rc.10", features = [
+    "ndarray",
+    "download-binaries",
+    "copy-dylibs",
+    "half",
+] }
 arpabet = "2.0.0"
 jieba-rs = "0.7.2"
 ndarray = "0.16.1"
@@ -30,5 +41,16 @@ pest_derive = "2.7"
 tokenizers = { version = "0.20.0", default-features = false, features = [
     "onig",
 ] }
+jni = { version = "0.21", optional = true }
+
+[features]
+jni = ["dep:jni"] # Enables JNI and dynamic ONNX loading for Android
+
 [target.'cfg(target_os = "android")'.dependencies]
-ort = { version = "2.0.0-rc.10", features = ["ndarray", "download-binaries", "copy-dylibs", "half", "load-dynamic"] }
+ort = { version = "2.0.0-rc.10", features = [
+    "ndarray",
+    "download-binaries",
+    "copy-dylibs",
+    "half",
+    "load-dynamic",
+] }
