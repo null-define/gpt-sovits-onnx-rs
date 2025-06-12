@@ -12,6 +12,13 @@
 
 ---
 
+## Demo Video on Android
+
+
+https://github.com/user-attachments/assets/f8198a2a-e656-4c04-affe-ffbd6849f294
+
+
+
 ## 当前问题
 
 1. 英文/中英混合能力较差，目前部分采用了GPT-SoVITS-Rust的逻辑，使用G2pw处理中文，在一定程度上有所改善，但是仍有差距。
