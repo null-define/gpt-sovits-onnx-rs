@@ -79,6 +79,7 @@ impl TTSModel {
             .with_intra_threads(4)?
             .with_parallel_execution(true)?
             .with_memory_pattern(false)?
+            // .with_profiling("d2s")?
             .commit_from_file(t2s_s_decoder_path)?;
         let tokenizer =
             Arc::new(tokenizers::Tokenizer::from_str(text::g2pw::G2PW_TOKENIZER).unwrap());

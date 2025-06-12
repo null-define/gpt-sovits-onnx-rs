@@ -140,8 +140,6 @@ class MultiheadAttention(Module):
     def forward(
         self,
         query: Tensor,
-        key: Tensor,
-        value: Tensor,
         key_padding_mask: Optional[Tensor] = None,
         need_weights: bool = True,
         attn_mask: Optional[Tensor] = None,
@@ -171,12 +169,10 @@ class MultiheadAttention(Module):
             k: Updated key tensor.
             v: Updated value tensor.
         """
-        query = key = value = query.transpose(1, 0)
+        query =  query.transpose(1, 0)
 
-        attn_output, attn_weights, k, v = multi_head_attention_forward_patched(
+        attn_output, k, v = multi_head_attention_forward_patched(
             query,
-            key,
-            value,
             self.embed_dim,
             self.num_heads,
             self.in_proj_weight,
@@ -199,4 +195,4 @@ class MultiheadAttention(Module):
 
         attn_output = attn_output.transpose(0, 1)
 
-        return attn_output, attn_weights, k, v
+        return attn_output, k, v

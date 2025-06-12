@@ -6,6 +6,7 @@ use std::{
 
 use jieba_rs::Jieba;
 
+use log::debug;
 use pest::Parser;
 
 pub mod dict;
@@ -358,71 +359,6 @@ fn split_zh_ph_(ph: &str) -> (&str, &str) {
     }
 }
 
-#[inline]
-fn is_punctution(c: char) -> bool {
-    matches!(
-        c,
-        // '。' | '.' | '?' | '？' | '!' | '！' | ',' | '，' | ';' | '；' | '\n'
-        '。' | '.' | '?' | '？' | '!' | '！' | ';' | '；' | '\n'
-    )
-}
-
-pub fn split_text(text: &str, max_chunk_size: usize) -> Vec<&str> {
-    let is_en = text.is_ascii();
-
-    let mut r = vec![];
-    let mut start_text = text;
-
-    let mut total_count = 0;
-    let mut splite_index = 0;
-
-    for s in text.split_inclusive(|c| is_punctution(c)) {
-        let count = if is_en {
-            s.split(" ").count()
-        } else {
-            s.chars().count()
-        };
-        log::trace!(
-            "s: {:?}, count: {} total_count: {} splite_index: {}",
-            s,
-            count,
-            total_count,
-            splite_index
-        );
-        if s.chars().count() == 1 {
-            splite_index += s.len();
-            continue;
-        }
-        if total_count + count > max_chunk_size {
-            let t = start_text.split_at(splite_index);
-            let trim_s = t.0.trim();
-            if !trim_s.is_empty() {
-                r.push(trim_s);
-            }
-            start_text = t.1;
-            total_count = count;
-            splite_index = s.len();
-        } else if s.ends_with(['\n']) {
-            splite_index += s.len();
-            let t = start_text.split_at(splite_index);
-            let trim_s = t.0.trim();
-            if !trim_s.is_empty() {
-                r.push(trim_s);
-            }
-            start_text = t.1;
-            total_count = 0;
-            splite_index = 0;
-        } else {
-            total_count += count;
-            splite_index += s.len();
-        }
-    }
-    if !start_text.trim().is_empty() {
-        r.push(start_text.trim());
-    }
-    r
-}
-
 pub struct TextProcessor {
     pub jieba: Jieba,
     pub g2pw: g2pw::G2PWConverter,
@@ -430,69 +366,78 @@ pub struct TextProcessor {
 }
 
 impl TextProcessor {
-    /// Converts text to phoneme sequences.
+    /// Converts text to phoneme sequences, splitting long sentences to ensure each has >8 words.
     pub fn get_phone(&mut self, text: &str) -> anyhow::Result<Vec<Vec<i64>>> {
         if text.trim().is_empty() {
             return Err(anyhow::anyhow!("Input text is empty"));
         }
 
+        // Split text into chunks with >8 words/characters
+        let chunks = split_text(text, usize::MAX); // Use large max_chunk_size to rely on word count
         let mut phone_seq = Vec::new();
-        let mut phone_builder = PhoneBuilder::new();
-        phone_builder.push_text(&self.jieba, text);
 
-        if !text.ends_with(['。', '.', '?', '？', '!', '！']) {
-            phone_builder.push_punctuation(".");
-        }
+        for chunk in chunks {
+            log::debug!("Processing chunk: {:?}", chunk);
 
-        for sentence in phone_builder.sentence {
-            match sentence {
-                Sentence::Zh(mut zh) => {
-                    log::debug!("Processing Zh text: {:?}", zh.zh_text);
-                    zh.generate_pinyin(self);
-                    match zh.build_phone() {
-                        Ok(phones) => phone_seq.push(phones),
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to build phones for Zh text '{}': {}",
-                                zh.zh_text,
-                                e
-                            );
-                            if cfg!(debug_assertions) {
-                                return Err(e);
+            // Validate chunk size (>8 words for English, >8 characters for Chinese)
+            // Build phonemes for the chunk
+            let mut phone_builder = PhoneBuilder::new();
+            phone_builder.push_text(&self.jieba, &chunk);
+
+            if !chunk.ends_with(['。', '.', '?', '？', '!', '！']) {
+                phone_builder.push_punctuation(".");
+            }
+
+            for sentence in phone_builder.sentence {
+                match sentence {
+                    Sentence::Zh(mut zh) => {
+                        log::debug!("Processing Zh text: {:?}", zh.zh_text);
+                        zh.generate_pinyin(self);
+                        match zh.build_phone() {
+                            Ok(phones) => phone_seq.push(phones),
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to build phones for Zh text '{}': {}",
+                                    zh.zh_text,
+                                    e
+                                );
+                                if cfg!(debug_assertions) {
+                                    return Err(e);
+                                }
                             }
                         }
                     }
-                }
-                Sentence::En(mut en) => {
-                    log::debug!("Processing En text: {:?}", en.en_text);
-                    en.generate_phones(self);
-                    match en.build_phone() {
-                        Ok(phones) => phone_seq.push(phones),
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to build phones for En text {:?}: {}",
-                                en.en_text,
-                                e
-                            );
-                            if cfg!(debug_assertions) {
-                                return Err(e);
+                    Sentence::En(mut en) => {
+                        log::debug!("Processing En text: {:?}", en.en_text);
+                        en.generate_phones(self);
+                        match en.build_phone() {
+                            Ok(phones) => phone_seq.push(phones),
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to build phones for En text {:?}: {}",
+                                    en.en_text,
+                                    e
+                                );
+                                if cfg!(debug_assertions) {
+                                    return Err(e);
+                                }
                             }
                         }
                     }
-                }
-                Sentence::Num(num) => {
-                    log::trace!("Processing Num text: {:?}", num.num_text);
-                    for s in num.to_phone_sentence()? {
-                        match s {
-                            Sentence::Zh(mut zh) => {
-                                zh.generate_pinyin(self);
-                                phone_seq.push(zh.build_phone()?);
+                    Sentence::Num(num) => {
+                        log::trace!("Processing Num text: {:?}", num.num_text);
+                        for s in num.to_phone_sentence()? {
+                            match s {
+                                Sentence::Zh(mut zh) => {
+                                    zh.generate_pinyin(self);
+                                    phone_seq.push(zh.build_phone()?);
+                                }
+                                Sentence::En(mut en) => {
+                                    en.generate_phones(self);
+                                    phone_seq.push(en.build_phone()?);
+                                }
+                                _ => {}
                             }
-                            Sentence::En(mut en) => {
-                                en.generate_phones(self);
-                                phone_seq.push(en.build_phone()?);
-                            }
-                            _ => {}
                         }
                     }
                 }
@@ -504,6 +449,68 @@ impl TextProcessor {
         }
         Ok(phone_seq)
     }
+}
+
+/// Modified split_text to ensure chunks have >8 words/characters
+pub fn split_text(text: &str, _max_chunk_size: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![];
+    }
+
+    let is_en = text.is_ascii();
+    let mut chunks = vec![];
+    let mut start_text = text;
+    let mut total_count = 0;
+    let mut split_index = 0;
+    let mut current_chunk = String::new();
+
+    for segment in text.split_inclusive(is_punctuation) {
+        let count = if is_en {
+            segment.split_whitespace().count()
+        } else {
+            segment.chars().count()
+        };
+
+        log::trace!(
+            "segment: {:?}, count: {}, total_count: {}, split_index: {}",
+            segment,
+            count,
+            total_count,
+            split_index
+        );
+
+        if segment.chars().count() == 1 && is_punctuation(segment.chars().next().unwrap()) {
+            current_chunk.push_str(segment);
+            split_index += segment.len();
+            continue;
+        }
+
+        current_chunk.push_str(segment);
+        total_count += count;
+
+        if total_count > 8 && (segment.ends_with(['。', '.', '?', '？', '!', '！', '\n'])) {
+            let trimmed: &&str = &current_chunk.trim();
+            if !trimmed.is_empty() {
+                chunks.push(trimmed.to_string());
+            }
+            start_text = &start_text[split_index..];
+            split_index = segment.len();
+            total_count = 0;
+            current_chunk = String::new();
+        } else {
+            split_index += segment.len();
+        }
+    }
+
+    if !current_chunk.trim().is_empty() {
+        chunks.push(current_chunk.trim().to_owned());
+    }
+    debug!("chunks {:?}", chunks);
+    chunks
+}
+
+fn is_punctuation(c: char) -> bool {
+    ['。', '.', '?', '？', '!', '！', ';', '；', '\n'].contains(&c)
 }
 
 #[derive(Debug)]
@@ -729,13 +736,6 @@ fn is_numeric(p: &str) -> bool {
             'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π', 'ρ',
             'σ', 'ς', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
         ])
-}
-
-fn is_jp_kana(p: &str) -> bool {
-    p.chars().all(|v| {
-        let code = v as u32;
-        (0x3040..=0x30FF).contains(&code) || code == 0x3005 // 々
-    })
 }
 
 impl PhoneBuilder {

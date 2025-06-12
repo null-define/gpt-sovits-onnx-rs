@@ -217,9 +217,7 @@ class TransformerEncoderLayer(nn.Module):
         v_cache: Optional[Tensor],
         first_infer: bool,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        x, _, k, v = self.self_attn(
-            x,
-            x,
+        x, k, v = self.self_attn(
             x,
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,

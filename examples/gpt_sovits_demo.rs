@@ -17,7 +17,7 @@ fn main() -> Result<(), GSVError> {
         assets_dir.join("kaoyu_t2s_encoder.onnx"),
         assets_dir.join("kaoyu_t2s_fs_decoder.onnx"),
         assets_dir.join("kaoyu_t2s_s_decoder.onnx"),
-        24
+        24,
     )?;
 
     // Process reference audio and text synchronously
@@ -30,17 +30,20 @@ fn main() -> Result<(), GSVError> {
     let (spec, samples) = model.run_sync("Hello, this is a test.")?;
 
     // Write to WAV file
-    let mut writer = WavWriter::create("output.wav", spec)?;
-    for sample in samples {
-        writer.write_sample(sample)?;
+    {
+        let mut writer = WavWriter::create("output.wav", spec)?;
+        for sample in samples {
+            writer.write_sample(sample)?;
+        }
+        writer.finalize()?;
     }
-    writer.finalize()?;
 
     // Example async usage (for comparison)
     let rt = Runtime::new()?;
     rt.block_on(async {
         let (spec, stream) = model
-            .run("今天天气很不错，天空全都是乌云，所以心里不开心。想要吃点好的犒劳一下自己。")
+            .run("你好呀，我们是一群追逐梦想的人！")
+            // .run("今天天气很不错，天空全都是乌云，所以心里不开心。想要吃点好的犒劳一下自己。")
             .await?;
         let mut writer = WavWriter::create("output_async.wav", spec)?;
         futures::pin_mut!(stream);
