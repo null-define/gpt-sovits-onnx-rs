@@ -14,6 +14,7 @@
 
 ## Demo Video on Android
 
+演示机为IQOO13，推理时间因不同SOC和机型可能差距较大。目前英文效果较差，且仍存在偶现输出提前停止。
 
 https://github.com/user-attachments/assets/f8198a2a-e656-4c04-affe-ffbd6849f294
 
@@ -32,7 +33,7 @@ https://github.com/user-attachments/assets/f8198a2a-e656-4c04-affe-ffbd6849f294
 
 本项目包含以下核心部分：
 
-1. **Rust 推理运行时**：适用于构建 x86 平台的推理可执行程序。
+1. **Rust 推理运行时**：适用于构建 x86/ARM 平台的推理可执行程序。
 2. **模型转换与优化脚本**：位于 `scripts` 目录，支持一键导出与优化 SoVITS 模型（注意新的模型结构和官方默认结构不兼容，需要拷贝完整脚本进行转换）。
 3. **Android 构建支持脚本**：由于 `ort-rs` 官方不提供 Android 的预构建包，需用户自行构建 ONNX Runtime。
 
@@ -66,7 +67,7 @@ https://github.com/user-attachments/assets/f8198a2a-e656-4c04-affe-ffbd6849f294
 
 ### x86 平台构建
 
-使用 Cargo 编译：
+直接使用 Cargo 编译即可：
 
 ```bash
 cargo build --release
@@ -95,7 +96,6 @@ cargo build --release
 
 * ⚠️ **NNAPI**：可运行，但未观察到明显性能提升。
 * 🚧 **XNNPACK**：当前模型结构不支持。
-* ❓ **QNN**： 理论上QNN的HTP后端可以提供更快的性能，后续探索。
 
 ### ONNX 替代 Runtime
 
