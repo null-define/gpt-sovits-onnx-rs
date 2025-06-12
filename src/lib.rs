@@ -57,30 +57,20 @@ impl TTSModel {
         num_layers: usize, // Added to match Python's num_layers
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
-        // let g2pw = Session::builder()?
-        //     .with_execution_providers([CPUExecutionProvider::default().build()])?
-        //     .with_optimization_level(GraphOptimizationLevel::Level3)?
-        //     .with_memory_pattern(false)?
-        //     .commit_from_file(g2pw_path)?;
-        let sovits = Session::builder()?
-            .with_execution_providers([CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_memory_pattern(false)?
+        let session_config = || {
+            Session::builder()?
+                .with_execution_providers([CPUExecutionProvider::default().build()])?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(8)? // Use physical core count
+                .with_memory_pattern(false)
+        };
+        let sovits = session_config()?
             .commit_from_file(sovits_path)?;
-        let ssl = Session::builder()?
-            .with_execution_providers([CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_memory_pattern(false)?
+        let ssl = session_config()?
             .commit_from_file(ssl_path)?;
-        let t2s_encoder = Session::builder()?
-            .with_execution_providers([CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_memory_pattern(false)?
+        let t2s_encoder = session_config()?
             .commit_from_file(t2s_encoder_path)?;
-        let t2s_fs_decoder = Session::builder()?
-            .with_execution_providers([CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_memory_pattern(false)?
+        let t2s_fs_decoder = session_config()?
             .commit_from_file(t2s_fs_decoder_path)?;
         let t2s_s_decoder = Session::builder()?
             .with_execution_providers([CPUExecutionProvider::default().build()])?

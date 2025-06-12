@@ -8,7 +8,7 @@ pub mod zh {
     use crate::text::PhoneBuilder;
 
     use super::*;
-    
+
     use pest::iterators::Pair;
 
     fn parse_pn(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
@@ -334,10 +334,11 @@ pub mod zh {
 pub mod en {
     use crate::text::PhoneBuilder;
 
-    use super::super::SEPARATOR;
     use super::*;
-    
+
     use pest::iterators::Pair;
+
+    const SEPARATOR: &'static str = " ";
 
     fn parse_pn(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::pn);
@@ -529,7 +530,7 @@ pub mod en {
     fn parse_link(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::link);
 
-        builder.push_punctuation(super::super::SEPARATOR);
+        builder.push_punctuation(SEPARATOR);
 
         Ok(())
     }

@@ -430,76 +430,77 @@ pub struct TextProcessor {
 }
 
 impl TextProcessor {
+    /// Converts text to phoneme sequences.
     pub fn get_phone(&mut self, text: &str) -> anyhow::Result<Vec<Vec<i64>>> {
-        let mut phone_seq = Vec::new();
+        if text.trim().is_empty() {
+            return Err(anyhow::anyhow!("Input text is empty"));
+        }
 
+        let mut phone_seq = Vec::new();
         let mut phone_builder = PhoneBuilder::new();
         phone_builder.push_text(&self.jieba, text);
+
         if !text.ends_with(['。', '.', '?', '？', '!', '！']) {
             phone_builder.push_punctuation(".");
         }
 
-        fn helper<I: IntoIterator<Item = Sentence>>(
-            i: I,
-            processor: &mut TextProcessor,
-            phone_seq: &mut Vec<Vec<i64>>,
-        ) -> anyhow::Result<()> {
-            for s in i {
-                match s {
-                    Sentence::Zh(mut zh) => {
-                        log::debug!("zh text: {:?}", zh.zh_text);
-                        log::debug!("zh phones: {:?}", zh.phones);
-                        if zh.zh_text.trim().is_empty() {
-                            log::trace!("get a empty zh text, skip");
-                            continue;
-                        }
-
-                        zh.generate_pinyin(processor);
-                        match zh.build_phone() {
-                            Ok(t) => {
-                                phone_seq.push(t);
-                            }
-                            Err(e) => {
-                                if cfg!(debug_assertions) {
-                                    return Err(e);
-                                } else {
-                                    log::warn!("get a error, skip: {}", zh.zh_text);
-                                    log::warn!("zh build_phone error: {}", e);
-                                }
-                            }
-                        };
-                    }
-                    Sentence::En(mut en) => {
-                        log::debug!("en text: {:?}", en.en_text);
-                        log::debug!("en phones: {:?}", en.phones);
-                        en.generate_phones(processor);
-                        match en.build_phone() {
-                            Ok(t) => {
-                                phone_seq.push(t);
-                            }
-                            Err(e) => {
-                                if cfg!(debug_assertions) {
-                                    return Err(e);
-                                } else {
-                                    log::warn!("get a error, skip: {:?}", en.en_text);
-                                    log::warn!("zh build_phone error: {}", e);
-                                }
+        for sentence in phone_builder.sentence {
+            match sentence {
+                Sentence::Zh(mut zh) => {
+                    log::debug!("Processing Zh text: {:?}", zh.zh_text);
+                    zh.generate_pinyin(self);
+                    match zh.build_phone() {
+                        Ok(phones) => phone_seq.push(phones),
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to build phones for Zh text '{}': {}",
+                                zh.zh_text,
+                                e
+                            );
+                            if cfg!(debug_assertions) {
+                                return Err(e);
                             }
                         }
                     }
-                    Sentence::Num(num) => {
-                        log::trace!("num text: {:?}", num.num_text);
-                        helper(num.to_phone_sentence()?, processor, phone_seq)?
+                }
+                Sentence::En(mut en) => {
+                    log::debug!("Processing En text: {:?}", en.en_text);
+                    en.generate_phones(self);
+                    match en.build_phone() {
+                        Ok(phones) => phone_seq.push(phones),
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to build phones for En text {:?}: {}",
+                                en.en_text,
+                                e
+                            );
+                            if cfg!(debug_assertions) {
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+                Sentence::Num(num) => {
+                    log::trace!("Processing Num text: {:?}", num.num_text);
+                    for s in num.to_phone_sentence()? {
+                        match s {
+                            Sentence::Zh(mut zh) => {
+                                zh.generate_pinyin(self);
+                                phone_seq.push(zh.build_phone()?);
+                            }
+                            Sentence::En(mut en) => {
+                                en.generate_phones(self);
+                                phone_seq.push(en.build_phone()?);
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
-            Ok(())
         }
 
-        helper(phone_builder.sentence, self, &mut phone_seq)?;
-
         if phone_seq.is_empty() {
-            return Err(anyhow::anyhow!("{text} get phone_seq is empty"));
+            return Err(anyhow::anyhow!("No phonemes generated for text: {}", text));
         }
         Ok(phone_seq)
     }
@@ -514,48 +515,51 @@ struct ZhSentence {
 }
 
 impl ZhSentence {
-    fn generate_pinyin(&mut self, gpts: &mut TextProcessor) {
-        let pinyin = match gpts.g2pw.get_pinyin(&self.zh_text) {
-            Ok(pinyin) => pinyin,
-            Err(e) => {
-                log::warn!("get pinyin error: {}. try simple plan", e);
-                gpts.g2pw.simple_get_pinyin(&self.zh_text)
-            }
-        };
-
-        debug_assert_eq!(pinyin.len(), self.phones.len());
-
-        log::debug!("pinyin: {:?}", pinyin);
+    fn generate_pinyin(&mut self, processor: &mut TextProcessor) {
+        let pinyin = processor
+            .g2pw
+            .get_pinyin(&self.zh_text)
+            .unwrap_or_else(|e| {
+                log::warn!("Pinyin generation failed: {}. Using simple plan.", e);
+                processor.g2pw.simple_get_pinyin(&self.zh_text)
+            });
 
         if pinyin.len() != self.phones.len() {
             log::warn!(
-                "pinyin len not equal phones len: {} != {}",
+                "Pinyin length mismatch: {} (pinyin) vs {} (phones)",
                 pinyin.len(),
                 self.phones.len()
             );
             self.phones = pinyin;
         } else {
-            for (i, out) in pinyin.iter().enumerate() {
-                let p = &mut self.phones[i];
-                if matches!(p, g2pw::G2PWOut::Pinyin("") | g2pw::G2PWOut::RawChar(_)) {
-                    *p = *out
+            for (i, out) in pinyin.into_iter().enumerate() {
+                if matches!(
+                    self.phones[i],
+                    g2pw::G2PWOut::Pinyin("") | g2pw::G2PWOut::RawChar(_)
+                ) {
+                    self.phones[i] = out;
                 }
             }
         }
-
         log::debug!("phones: {:?}", self.phones);
 
         for p in &self.phones {
             match p {
                 g2pw::G2PWOut::Pinyin(p) => {
-                    let (s, y) = split_zh_ph(&p);
-                    self.phones_ids.push(get_phone_symbol(&gpts.symbols, s));
-                    self.phones_ids.push(get_phone_symbol(&gpts.symbols, y));
-                    self.word2ph.push(2);
+                    let (initial, final_) = split_zh_ph(p);
+                    self.phones_ids
+                        .push(get_phone_symbol(&processor.symbols, initial));
+                    if !final_.is_empty() {
+                        self.phones_ids
+                            .push(get_phone_symbol(&processor.symbols, final_));
+                        self.word2ph.push(2);
+                    } else {
+                        self.word2ph.push(1);
+                    }
                 }
                 g2pw::G2PWOut::RawChar(c) => {
                     self.phones_ids
-                        .push(get_phone_symbol(&gpts.symbols, c.to_string().as_str()));
+                        .push(get_phone_symbol(&processor.symbols, &c.to_string()));
                     self.word2ph.push(1);
                 }
             }
@@ -589,38 +593,39 @@ struct EnSentence {
     en_text: Vec<EnWord>,
 }
 
-const SEPARATOR: &'static str = " ";
-
 impl EnSentence {
-    fn generate_phones(&mut self, gpts: &TextProcessor) {
+    fn generate_phones(&mut self, processor: &TextProcessor) {
         let arpabet = arpabet::load_cmudict();
-        log::trace!("EnSentence text: {:?}", self.en_text);
-        let symbols = &gpts.symbols;
         for word in &self.en_text {
             match word {
-                EnWord::Word(word) => {
-                    if let Some(v) = arpabet.get_polyphone_str(word) {
-                        for ph in v {
+                EnWord::Word(w) => {
+                    if let Some(phones) = arpabet.get_polyphone_str(w) {
+                        for ph in phones {
                             self.phones.push(Cow::Borrowed(ph));
-                            self.phones_ids.push(get_phone_symbol(symbols, ph));
+                            self.phones_ids
+                                .push(get_phone_symbol(&processor.symbols, ph));
                         }
                     } else {
-                        for c in word.chars() {
-                            let mut b = [0; 4];
-                            let c = c.encode_utf8(&mut b);
-
-                            if let Some(v) = arpabet.get_polyphone_str(c) {
-                                self.phones.push(word.clone().into());
-                                for ph in v {
-                                    self.phones_ids.push(get_phone_symbol(symbols, ph));
+                        for c in w.chars() {
+                            let c_str = c.to_string();
+                            if let Some(phones) = arpabet.get_polyphone_str(&c_str) {
+                                for ph in phones {
+                                    self.phones.push(Cow::Borrowed(ph));
+                                    self.phones_ids
+                                        .push(get_phone_symbol(&processor.symbols, ph));
                                 }
+                            } else {
+                                self.phones.push(Cow::Owned(c_str.clone()));
+                                self.phones_ids
+                                    .push(get_phone_symbol(&processor.symbols, &c_str));
                             }
                         }
                     }
                 }
                 EnWord::Punctuation(p) => {
                     self.phones.push(Cow::Borrowed(p));
-                    self.phones_ids.push(get_phone_symbol(symbols, p));
+                    self.phones_ids
+                        .push(get_phone_symbol(&processor.symbols, p));
                 }
             }
         }
