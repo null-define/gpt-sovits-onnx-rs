@@ -9,12 +9,24 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jfloatArray, jlong, jboolean};
 
 use jni::JNIEnv;
+use log::LevelFilter;
 
 
 const JNI_TRUE: jboolean = 1;
 
 const JNI_FALSE: jboolean = 0;
 
+use android_logger::Config;
+
+fn init_logging() {
+    {
+        android_logger::init_once(
+            Config::default()
+                .with_max_level(LevelFilter::Debug) // Set desired log level
+                .with_tag("rust.gpt_sovits_demo"), // Tag for logcat
+        );
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel(
@@ -28,6 +40,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     t2s_s_decoder_path: JString,
     max_length: jlong,
 ) -> jlong {
+    init_logging();
     // Convert JString to Rust String with error handling
     let g2pW: String = match env.get_string(&g2pW_path) {
         Ok(s) => s.into(),

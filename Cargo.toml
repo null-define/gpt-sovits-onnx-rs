@@ -54,3 +54,4 @@ ort = { version = "2.0.0-rc.10", features = [
     "half",
     "load-dynamic",
 ] }
+android_logger = "0.15"

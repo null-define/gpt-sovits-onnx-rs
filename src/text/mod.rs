@@ -387,6 +387,7 @@ impl TextProcessor {
             if !chunk.ends_with(['。', '.', '?', '？', '!', '！']) {
                 phone_builder.push_punctuation(".");
             }
+            let mut single_phone_seq = Vec::new();
 
             for sentence in phone_builder.sentence {
                 match sentence {
@@ -394,7 +395,7 @@ impl TextProcessor {
                         log::debug!("Processing Zh text: {:?}", zh.zh_text);
                         zh.generate_pinyin(self);
                         match zh.build_phone() {
-                            Ok(phones) => phone_seq.push(phones),
+                            Ok(phones) => single_phone_seq.push(phones),
                             Err(e) => {
                                 log::warn!(
                                     "Failed to build phones for Zh text '{}': {}",
@@ -411,7 +412,7 @@ impl TextProcessor {
                         log::debug!("Processing En text: {:?}", en.en_text);
                         en.generate_phones(self);
                         match en.build_phone() {
-                            Ok(phones) => phone_seq.push(phones),
+                            Ok(phones) => single_phone_seq.push(phones),
                             Err(e) => {
                                 log::warn!(
                                     "Failed to build phones for En text {:?}: {}",
@@ -430,17 +431,21 @@ impl TextProcessor {
                             match s {
                                 Sentence::Zh(mut zh) => {
                                     zh.generate_pinyin(self);
-                                    phone_seq.push(zh.build_phone()?);
+                                    single_phone_seq.push(zh.build_phone()?);
                                 }
                                 Sentence::En(mut en) => {
                                     en.generate_phones(self);
-                                    phone_seq.push(en.build_phone()?);
+                                    single_phone_seq.push(en.build_phone()?);
                                 }
                                 _ => {}
                             }
                         }
                     }
                 }
+            }
+            let concat_seq = single_phone_seq.concat();
+            if !concat_seq.is_empty() {
+                phone_seq.push(concat_seq);
             }
         }
 

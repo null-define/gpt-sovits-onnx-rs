@@ -40,4 +40,4 @@ export API=32
 export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 
 # Build with cargo
-cargo build --target $TARGET --release --features jni
+cargo build --target $TARGET --release --features jni  --examples

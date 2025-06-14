@@ -30,9 +30,12 @@ cd onnxruntime-1.22.0
 ./build.sh --android \
     --android_ndk_path $ANDROID_NDK_HOME \
     --android_sdk_path $ANDROID_SDK_HOME \
-    --config Release \
+    --config MinSizeRel \
     --android_api 32 \
     --android_abi arm64-v8a \
     --build_shared_lib \
     --skip_tests \
-    --parallel 
+    --parallel \
+    --use_xnnpack \
+    --disable_ml_ops \
+    --cmake_extra_defines onnxruntime_ENABLE_CPU_FP16_OPS=ON 

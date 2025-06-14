@@ -27,7 +27,7 @@ fn main() -> Result<(), GSVError> {
     )?;
 
     // Run inference synchronously
-    let (spec, samples) = model.run_sync("Hello, this is a test.")?;
+    let (spec, samples) = model.run_sync("小鱼想成为你的好朋友，而不仅仅是一个可爱的AI助理")?;
 
     // Write to WAV file
     {
