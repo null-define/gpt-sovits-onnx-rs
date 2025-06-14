@@ -14,6 +14,7 @@
 
 ## Demo Video on Android
 
+源代码：[gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master)
 演示机为IQOO13，推理时间因不同SOC和机型可能差距较大。目前英文效果较差，且仍存在偶现输出提前停止。
 
 https://github.com/user-attachments/assets/f8198a2a-e656-4c04-affe-ffbd6849f294

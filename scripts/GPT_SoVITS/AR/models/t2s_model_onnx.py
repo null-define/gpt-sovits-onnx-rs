@@ -25,7 +25,7 @@ def logits_to_probs(
     temperature: float = 1.0,
     top_k=None,
     top_p=None,
-    repetition_penalty: float = 1.0,
+    repetition_penalty: float = 1.35,
 ):
     previous_tokens = previous_tokens.squeeze()
     if previous_tokens is not None and repetition_penalty != 1.0:
