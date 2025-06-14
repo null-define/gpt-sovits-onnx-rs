@@ -174,7 +174,6 @@ class T2SStageDecoder(nn.Module):
 
     def forward(self, y, k_cache, v_cache, y_emb, x_example):
         y_emb = torch.cat([y_emb, self.ar_audio_embedding(y[:, -1:])], 1)
-        y_emb_cache = y_emb
 
         y_pos = self.ar_audio_position(y_emb)
         xy_pos = y_pos[:, -1:]
@@ -187,7 +186,7 @@ class T2SStageDecoder(nn.Module):
         samples = sample(logits[0], y, top_k=self.top_k, top_p=1.0, repetition_penalty=1.35)[0].unsqueeze(0)
 
         y = torch.concat([y, samples], dim=1)
-        return y, k_cache, v_cache, y_emb_cache, logits, samples
+        return y, k_cache, v_cache, y_emb
 
 class Text2SemanticDecoder(nn.Module):
     def __init__(self, config, norm_first=False, top_k=3):

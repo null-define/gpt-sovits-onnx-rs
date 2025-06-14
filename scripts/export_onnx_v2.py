@@ -102,27 +102,17 @@ class T2SModel(nn.Module):
 
         stop = False
         for idx in range(1, 1500):
-            y, k_cache, v_cache, y_emb, logits, samples = self.stage_decoder(y, k_cache, v_cache, y_emb, x_example)
+            y, k_cache, v_cache, y_emb = self.stage_decoder(y, k_cache, v_cache, y_emb, x_example)
             if early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num:
                 stop = True
-            if torch.argmax(logits, dim=-1)[0] == self.t2s_model.EOS or samples[0, 0] == self.t2s_model.EOS:
+            if y[0, -1] == self.t2s_model.EOS:
                 stop = True
             if stop:
                 break
         y[0, -1] = 0
         return y[:, -idx:].unsqueeze(0)
 
-    def export(self, ref_seq, text_seq, ref_bert, text_bert, ssl_content, project_name, dynamo=False):
-        if dynamo:
-            export_options = torch.onnx.ExportOptions(dynamic_shapes=True)
-            onnx_encoder_export_output = torch.onnx.dynamo_export(
-                self.onnx_encoder,
-                (ref_seq, text_seq, ref_bert, text_bert, ssl_content),
-                export_options=export_options
-            )
-            onnx_encoder_export_output.save(f"onnx/{project_name}/{project_name}_t2s_encoder.onnx")
-            return
-
+    def export(self, ref_seq, text_seq, ref_bert, text_bert, ssl_content, project_name):
         torch.onnx.export(
             self.onnx_encoder,
             (ref_seq, text_seq, ref_bert, text_bert, ssl_content),
@@ -136,7 +126,7 @@ class T2SModel(nn.Module):
                 "text_bert": {0: "text_length"},
                 "ssl_content": {2: "ssl_length"},
             },
-            opset_version=20
+            opset_version=20,
         )
         x, prompts = self.onnx_encoder(ref_seq, text_seq, ref_bert, text_bert, ssl_content)
 
@@ -171,18 +161,20 @@ class T2SModel(nn.Module):
             self.stage_decoder,
             (y, k_cache, v_cache, y_emb, x_example),
             f"onnx/{project_name}/{project_name}_t2s_s_decoder.onnx",
-            input_names=["y"] + [f"k_cache_{i}" for i in range(num_layers)] + 
-                        [f"v_cache_{i}" for i in range(num_layers)] + ["y_emb", "x_example"],
+            input_names=["iy"] + [f"ik_cache_{i}" for i in range(num_layers)] + 
+                        [f"iv_cache_{i}" for i in range(num_layers)] + ["iy_emb", "x_example"],
             output_names=["y"] + [f"k_cache_{i}" for i in range(num_layers)] + 
-                         [f"v_cache_{i}" for i in range(num_layers)] + ["y_emb", "logits", "samples"],
+                         [f"v_cache_{i}" for i in range(num_layers)] + ["y_emb"],
             dynamic_axes={
+                "iy": {1: "iy_length"},
+                **{f"ik_cache_{i}": {0: "ik_length"} for i in range(num_layers)},
+                **{f"iv_cache_{i}": {0: "iv_length"} for i in range(num_layers)},
+                "iy_emb": {1: "y_emb_length"},
                 "y": {1: "y_length"},
                 **{f"k_cache_{i}": {0: "k_length"} for i in range(num_layers)},
                 **{f"v_cache_{i}": {0: "v_length"} for i in range(num_layers)},
                 "y_emb": {1: "y_emb_length"},
                 "x_example": {1: "x_example_length"},
-                "logits": {0: "logits_length"},
-                "samples": {1: "samples_length"},
             },
             verbose=False,
             opset_version=20
@@ -326,7 +318,7 @@ if __name__ == "__main__":
     gpt_path = base_path + "kaoyu_v2/kaoyu_gpt.ckpt"
     vits_path = base_path + "kaoyu_v2/kaoyu_sovits.pth"
     exp_path = "kaoyu"
-
-    export(vits_path, gpt_path, exp_path)
+    with torch.no_grad():
+        export(vits_path, gpt_path, exp_path)
 
     # soundfile.write("out.wav", a, vits.hps.data.sampling_rate)

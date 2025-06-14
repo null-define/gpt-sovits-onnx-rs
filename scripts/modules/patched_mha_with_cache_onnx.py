@@ -10,15 +10,22 @@ import torch
 from typing import Optional
 
 # Efficient implementation equivalent to the following:
-def scaled_dot_product_attention(
+# Attention is available in op_set 23, But currently no impl has this support
+def scaled_dot_product_attention_custom(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attn_mask: Optional[torch.Tensor] = None,
-    scale: Optional[torch.Tensor] = None,
+    attn_mask: Optional[torch.Tensor],
+    num_heads,
+    head_dim,
 ) -> torch.Tensor:
+    query = query.view(-1, num_heads, head_dim).transpose(0, 1) # 170, 1, 512 -> 170, 16, 32 -> 16, 170, 32
+    key = key.view(-1, num_heads, head_dim).permute(1,2,0)  # 170, 1, 512 -> 170, 16, 32 -> 16, 170, 32 ->16, 32, 170
+    value = value.view(-1, num_heads, head_dim).transpose(0, 1) # 170, 1, 512 -> 170, 16, 32 -> 16, 170, 32
+
     scale_factor = torch.tensor(1 / math.sqrt(query.size(-1)))
-    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+
+    attn_weight = query @ key * scale_factor
     attn_weight = attn_mask + attn_weight
     attn_weight = torch.softmax(attn_weight, dim=-1)
     return attn_weight @ value
@@ -73,7 +80,6 @@ def multi_head_attention_forward_patched(
         target_type=query.dtype,
         check_other=False,
     )
-    dropout_p = 0.0
     head_dim = embed_dim // num_heads
     proj_qkv = linear(query, in_proj_weight, in_proj_bias)
     proj_qkv = proj_qkv.unflatten(-1, (3, query.size(-1))).unsqueeze(0).transpose(0, -2).squeeze(-2).contiguous()
@@ -84,13 +90,7 @@ def multi_head_attention_forward_patched(
         k = torch.cat([k_cache, k], dim=0)
         v = torch.cat([v_cache, v], dim=0)
 
-    # attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
-    q_v = q.view(-1, num_heads, head_dim).transpose(0, 1)
-    k_v = k.view(-1, num_heads, head_dim).transpose(0, 1)
-    v_v = v.view(-1, num_heads, head_dim).transpose(0, 1)
-
-
-    attn_output = scaled_dot_product_attention(q_v, k_v, v_v, attn_mask, dropout_p)
+    attn_output = scaled_dot_product_attention_custom(q, k, v, attn_mask, num_heads, head_dim)
 
     attn_output = attn_output.permute(1, 0, 2).contiguous().view(-1, embed_dim)
     attn_output = linear(attn_output, out_proj_weight, out_proj_bias)

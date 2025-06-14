@@ -60,26 +60,25 @@ def process_model(file_path, output_path):
     model = onnx.load(file_path)
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
+    model, _ = simplify(model, include_subgraph=True)
+    logger.info(f"ONNX simplification done for: {output_path}")
 
     # Apply slim optimization for non-vits models
     if "vits" not in output_path.lower():
         # Simplify model
-        model, _ = simplify(model, include_subgraph=True)
-        logger.info(f"ONNX simplification done for: {output_path}")
         from onnxslim import slim, OptimizationSettings
-
         model = slim(model)
         logger.info(f"ONNX slim optimization done for: {output_path}")
 
-    # Apply float16 conversion for decoder models, reduce mem and opt for arm
-    # has precision issue if fp16.so disabled
+    # Apply float16 conversion for decoder models, reduce mem
+    # has precision issue if fp16, also no acceleration 
     # if "decoder" in output_path.lower():
-    #     model = float16.convert_float_to_float16(model, keep_io_types=True)
+    #     model = float16.convert_float_to_float16(model, keep_io_types=["x", "y", "iy" ])
     #     logger.info(f"FP16 conversion done for: {output_path}")
 
     model = optimize(
         model=model, passes=get_fuse_and_elimination_passes(),
-    )
+    )  # seems not work
 
     onnx.save(model, output_path)  # Ensure model is saved
 
