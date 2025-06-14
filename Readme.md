@@ -17,14 +17,13 @@
 源代码：[gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master)
 演示机为IQOO13，推理时间因不同SOC和机型可能差距较大。目前英文效果较差，且仍存在偶现输出提前停止。
 
-https://github.com/user-attachments/assets/f8198a2a-e656-4c04-affe-ffbd6849f294
-
-
 
 ## 当前问题
 
 1. 英文/中英混合能力较差，目前部分采用了GPT-SoVITS-Rust的逻辑，使用G2pw处理中文，在一定程度上有所改善，但是仍有差距。
 2. 输出效果稳定性仍较差。
+3. 由于ORT的设计，部分kvcache的拷贝在不修改ORT的前提下无法优化，这个拷贝将每个迭代阻塞了2ms。
+![image](doc/assets/otr_rs_issue.png)
 
 ## 性能信息
 
@@ -95,8 +94,8 @@ cargo build --release
 
 ### Execution Provider（EP）
 
-* ⚠️ **NNAPI**：可运行，但未观察到明显性能提升。
-* 🚧 **XNNPACK**：当前模型结构不支持。
+* ⚠️ **NNAPI**：所有模型结构均可运行，但无论fp16/fp32未观察到明显性能提升。
+* ✅ **XNNPACK**：可以使用XNNPACK的EP运行decoder模型，但未见明显加速。
 
 ### ONNX 替代 Runtime
 
