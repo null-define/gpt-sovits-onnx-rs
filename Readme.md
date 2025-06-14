@@ -18,6 +18,10 @@
 演示机为IQOO13，推理时间因不同SOC和机型可能差距较大。目前英文效果较差，且仍存在偶现输出提前停止。
 
 
+https://github.com/user-attachments/assets/41260271-2af5-4fbc-af5f-1dad7f48aec9
+
+
+
 ## 当前问题
 
 1. 英文/中英混合能力较差，目前部分采用了GPT-SoVITS-Rust的逻辑，使用G2pw处理中文，在一定程度上有所改善，但是仍有差距。
@@ -94,8 +98,8 @@ cargo build --release
 
 ### Execution Provider（EP）
 
-* ⚠️ **NNAPI**：所有模型结构均可运行，但无论fp16/fp32未观察到明显性能提升。
-* ✅ **XNNPACK**：可以使用XNNPACK的EP运行decoder模型，但未见明显加速。
+* ⚠️ **NNAPI**：所有模型结构均可运行，但无论fp16/fp32未观察到明显性能提升。（Google官方已经不建议使用NNAPI）
+* ✅ **XNNPACK**：可以使用XNNPACK的EP运行decoder模型，但在IQOO13未见明显加速。（但结论不一定对所有平台生效）
 
 ### ONNX 替代 Runtime
 
