@@ -6,11 +6,10 @@ use tokio::runtime::Runtime;
 
 use jni::objects::{JClass, JString};
 
-use jni::sys::{jfloatArray, jlong, jboolean};
+use jni::sys::{jboolean, jfloatArray, jlong};
 
 use jni::JNIEnv;
 use log::LevelFilter;
-
 
 const JNI_TRUE: jboolean = 1;
 
@@ -45,48 +44,66 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     let g2pW: String = match env.get_string(&g2pW_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get g2pW path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get g2pW path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
     let vits: String = match env.get_string(&vits_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get vits path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get vits path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
     let ssl: String = match env.get_string(&ssl_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get ssl path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get ssl path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
     let t2s_encoder: String = match env.get_string(&t2s_encoder_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get t2s encoder path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get t2s encoder path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
     let t2s_fs_decoder: String = match env.get_string(&t2s_fs_decoder_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get t2s fs decoder path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get t2s fs decoder path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
     let t2s_s_decoder: String = match env.get_string(&t2s_s_decoder_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get t2s s decoder path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get t2s s decoder path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
@@ -95,8 +112,11 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     let max_length_usize = match max_length.try_into() {
         Ok(val) => val,
         Err(_) => {
-            env.throw_new("java/lang/IllegalArgumentException", "Invalid max_length value")
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                "Invalid max_length value",
+            )
+            .expect("Failed to throw exception");
             return 0;
         }
     };
@@ -112,13 +132,15 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     ) {
         Ok(model) => Box::into_raw(Box::new(model)) as jlong,
         Err(e) => {
-            env.throw_new("java/lang/RuntimeException", format!("Failed to initialize model: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/RuntimeException",
+                format!("Failed to initialize model: {}", e),
+            )
+            .expect("Failed to throw exception");
             0
         }
     }
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_processReferenceSync(
@@ -132,16 +154,22 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_processRe
     let ref_audio: String = match env.get_string(&ref_audio_path) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get ref audio path: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get ref audio path: {}", e),
+            )
+            .expect("Failed to throw exception");
             return JNI_FALSE;
         }
     };
     let ref_text: String = match env.get_string(&ref_text) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get ref text: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get ref text: {}", e),
+            )
+            .expect("Failed to throw exception");
             return JNI_FALSE;
         }
     };
@@ -149,13 +177,15 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_processRe
     match model.process_reference_sync(Path::new(&ref_audio), &ref_text) {
         Ok(_) => JNI_TRUE,
         Err(e) => {
-            env.throw_new("java/lang/RuntimeException", format!("Failed to process reference: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/RuntimeException",
+                format!("Failed to process reference: {}", e),
+            )
+            .expect("Failed to throw exception");
             JNI_FALSE
         }
     }
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInferenceSync(
@@ -168,8 +198,11 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInfere
     let text: String = match env.get_string(&text) {
         Ok(s) => s.into(),
         Err(e) => {
-            env.throw_new("java/lang/IllegalArgumentException", format!("Couldn't get text: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get text: {}", e),
+            )
+            .expect("Failed to throw exception");
             return std::ptr::null_mut();
         }
     };
@@ -180,28 +213,36 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInfere
             let float_array = match env.new_float_array(samples_vec.len() as i32) {
                 Ok(arr) => arr,
                 Err(e) => {
-                    env.throw_new("java/lang/RuntimeException", format!("Couldn't create float array: {}", e))
-                        .expect("Failed to throw exception");
+                    env.throw_new(
+                        "java/lang/RuntimeException",
+                        format!("Couldn't create float array: {}", e),
+                    )
+                    .expect("Failed to throw exception");
                     return std::ptr::null_mut();
                 }
             };
             match env.set_float_array_region(&float_array, 0, &samples_vec) {
                 Ok(_) => float_array.into_raw(),
                 Err(e) => {
-                    env.throw_new("java/lang/RuntimeException", format!("Couldn't set float array: {}", e))
-                        .expect("Failed to throw exception");
+                    env.throw_new(
+                        "java/lang/RuntimeException",
+                        format!("Couldn't set float array: {}", e),
+                    )
+                    .expect("Failed to throw exception");
                     std::ptr::null_mut()
                 }
             }
         }
         Err(e) => {
-            env.throw_new("java/lang/RuntimeException", format!("Failed to run inference: {}", e))
-                .expect("Failed to throw exception");
+            env.throw_new(
+                "java/lang/RuntimeException",
+                format!("Failed to run inference: {}", e),
+            )
+            .expect("Failed to throw exception");
             std::ptr::null_mut()
         }
     }
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_freeModel(

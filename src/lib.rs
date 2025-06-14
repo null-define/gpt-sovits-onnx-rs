@@ -6,7 +6,10 @@ use log::{debug, error, info};
 use ndarray::{Array, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, ViewRepr, s};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::{TensorRef, Value};
-use ort::{execution_providers::CPUExecutionProvider, inputs};
+use ort::{
+    execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
+    inputs,
+};
 use std::num::NonZero;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -16,8 +19,6 @@ use tokio::task::block_in_place;
 mod error;
 mod text;
 mod utils;
-
-use utils::*;
 
 use crate::text::TextProcessor;
 use crate::text::g2pw::G2PWConverter;
@@ -60,14 +61,14 @@ impl TTSModel {
         num_layers: usize,
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
-        let cpu_session_config = || {
-            Session::builder()?
-                .with_execution_providers([CPUExecutionProvider::default()
-                    .with_arena_allocator(true)
-                    .build()])?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(8)
-        };
+        // let cpu_session_config = || {
+        //     Session::builder()?
+        //         .with_execution_providers([CPUExecutionProvider::default()
+        //             .with_arena_allocator(true)
+        //             .build()])?
+        //         .with_optimization_level(GraphOptimizationLevel::Level3)?
+        //         .with_intra_threads(8)
+        // };
 
         let cpu_session2_config = || {
             Session::builder()?
@@ -78,19 +79,30 @@ impl TTSModel {
                 .with_intra_threads(4)?
                 .with_inter_threads(2)
         };
-        let sovits = cpu_session_config()?.commit_from_file(sovits_path)?;
-        let ssl = cpu_session_config()?.commit_from_file(ssl_path)?;
-        let t2s_encoder = cpu_session_config()?.commit_from_file(t2s_encoder_path)?;
+
+        let xnnpack_session_config = || {
+            Session::builder()?
+                .with_execution_providers([XNNPACKExecutionProvider::default()
+                    .with_intra_op_num_threads(NonZero::new(8).unwrap())
+                    .build()])?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+        };
+        let sovits = xnnpack_session_config()?.commit_from_file(sovits_path)?;
+        let ssl = xnnpack_session_config()?.commit_from_file(ssl_path)?;
+        let t2s_encoder = cpu_session2_config()?.commit_from_file(t2s_encoder_path)?;
         let t2s_fs_decoder = cpu_session2_config()?.commit_from_file(t2s_fs_decoder_path)?;
         let t2s_s_decoder = cpu_session2_config()?
             // .with_profiling("d2s")?
             .commit_from_file(t2s_s_decoder_path)?;
+
+        let g2pw_session = xnnpack_session_config()?.commit_from_file(g2pw_path)?;
+
         let tokenizer =
             Arc::new(tokenizers::Tokenizer::from_str(text::g2pw::G2PW_TOKENIZER).unwrap());
 
         let text_processor = TextProcessor {
             jieba: Jieba::new(),
-            g2pw: G2PWConverter::new(g2pw_path, tokenizer).unwrap(),
+            g2pw: G2PWConverter::new(g2pw_session, tokenizer).unwrap(),
             symbols: text::symbols::SYMBOLS.clone(),
         };
 

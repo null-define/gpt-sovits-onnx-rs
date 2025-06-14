@@ -329,23 +329,7 @@ pub fn str_is_chinese(s: &str) -> bool {
 }
 
 impl G2PWConverter {
-    pub fn empty() -> Self {
-        Self {
-            model: None,
-            tokenizers: None,
-        }
-    }
-
-    pub fn new<P: AsRef<Path>>(
-        model_path: P,
-        tokenizer: Arc<tokenizers::Tokenizer>,
-    ) -> anyhow::Result<Self> {
-        let session = Session::builder()?
-            .with_execution_providers([CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_memory_pattern(false)?
-            .commit_from_file(model_path)?;
-
+    pub fn new(session: Session, tokenizer: Arc<tokenizers::Tokenizer>) -> anyhow::Result<Self> {
         Ok(Self {
             model: Some(session),
             tokenizers: Some(tokenizer),

@@ -13,6 +13,7 @@ from onnxoptimizer import (
     get_fuse_and_elimination_passes,
 )
 from onnxruntime.transformers import float16
+from onnxruntime.quantization import quantize_dynamic, QuantType
 
 # Configure logging
 logging.basicConfig(
@@ -55,32 +56,47 @@ def validate_environment():
 
 def process_model(file_path, output_path):
     logger.info(f"Processing model: {file_path}")
-
-    # Load and convert model to opset 21
     model = onnx.load(file_path)
+    
+    # convert to fp6 with these 2 models because they are huge
+    # if "g2p" in file_path.lower():
+    #     model = float16.convert_float_to_float16(model, keep_io_types=True)
+    #     logger.info(f"FP16 conversion done for: {output_path}")
+    #     if "g2p" in file_path.lower():
+    #         onnx.save(model, output_path)  # Ensure model is saved
+    #         return output_path
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
-    model, _ = simplify(model, include_subgraph=True)
-    logger.info(f"ONNX simplification done for: {output_path}")
-
-    # Apply slim optimization for non-vits models
-    if "vits" not in output_path.lower():
-        # Simplify model
-        from onnxslim import slim, OptimizationSettings
-        model = slim(model)
-        logger.info(f"ONNX slim optimization done for: {output_path}")
-
-    # Apply float16 conversion for decoder models, reduce mem
-    # has precision issue if fp16, also no acceleration 
-    # if "decoder" in output_path.lower():
-    #     model = float16.convert_float_to_float16(model, keep_io_types=["x", "y", "iy" ])
-    #     logger.info(f"FP16 conversion done for: {output_path}")
-
+    # change and simplify except vits because vits model has bug
+    if "vits" not in file_path.lower():
+        model, _ = simplify(model)
+        logger.info(f"ONNX simplification done for: {output_path}")
+    # optimize for all
     model = optimize(
-        model=model, passes=get_fuse_and_elimination_passes(),
-    )  # seems not work
+        model=model,
+        passes=get_fuse_and_elimination_passes(),
+    )
+    # slim for all
+    from onnxslim import slim, OptimizationSettings
+    model = slim(model)
+    logger.info(f"ONNX slim optimization done for: {output_path}")
 
-    onnx.save(model, output_path)  # Ensure model is saved
+    # quant decoder to int8 && save
+    if "decoder" in output_path.lower() or "g2p" in output_path.lower() :
+        model = quantize_dynamic(model, output_path)
+        logger.info(f"INT8 quant done for: {output_path}")
+    else:
+        onnx.save(model, output_path)  # Ensure model is saved
+
+    # basic optimize for all
+    # model = onnx.load(output_path)
+    # model = optimize(
+    #     model=model,
+    #     passes=get_fuse_and_elimination_passes(),
+    # )
+
+    # onnx.save(model, output_path)  # Ensure model is saved
+
 
     # use ort on-device optimizer to get better performance
     # import onnxruntime as rt
