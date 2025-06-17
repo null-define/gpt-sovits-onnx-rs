@@ -61,41 +61,24 @@ impl TTSModel {
         num_layers: usize,
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
-        // let cpu_session_config = || {
-        //     Session::builder()?
-        //         .with_execution_providers([CPUExecutionProvider::default()
-        //             .with_arena_allocator(true)
-        //             .build()])?
-        //         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        //         .with_intra_threads(8)
-        // };
 
-        let cpu_session2_config = || {
+        let make_cpu_session = || {
             Session::builder()?
                 .with_execution_providers([CPUExecutionProvider::default()
                     .with_arena_allocator(true)
                     .build()])?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(4)?
-                .with_inter_threads(2)
+                .with_intra_threads(8)
         };
-
-        let xnnpack_session_config = || {
-            Session::builder()?
-                .with_execution_providers([XNNPACKExecutionProvider::default()
-                    .with_intra_op_num_threads(NonZero::new(8).unwrap())
-                    .build()])?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-        };
-        let sovits = xnnpack_session_config()?.commit_from_file(sovits_path)?;
-        let ssl = xnnpack_session_config()?.commit_from_file(ssl_path)?;
-        let t2s_encoder = cpu_session2_config()?.commit_from_file(t2s_encoder_path)?;
-        let t2s_fs_decoder = cpu_session2_config()?.commit_from_file(t2s_fs_decoder_path)?;
-        let t2s_s_decoder = cpu_session2_config()?
+        let sovits = make_cpu_session()?.commit_from_file(sovits_path)?;
+        let ssl = make_cpu_session()?.commit_from_file(ssl_path)?;
+        let t2s_encoder = make_cpu_session()?.commit_from_file(t2s_encoder_path)?;
+        let t2s_fs_decoder = make_cpu_session()?.commit_from_file(t2s_fs_decoder_path)?;
+        let t2s_s_decoder = make_cpu_session()?
             // .with_profiling("d2s")?
             .commit_from_file(t2s_s_decoder_path)?;
 
-        let g2pw_session = xnnpack_session_config()?.commit_from_file(g2pw_path)?;
+        let g2pw_session = make_cpu_session()?.commit_from_file(g2pw_path)?;
 
         let tokenizer =
             Arc::new(tokenizers::Tokenizer::from_str(text::g2pw::G2PW_TOKENIZER).unwrap());

@@ -103,7 +103,7 @@ cargo build --release
 
 ### ONNX 替代 Runtime
 
-* ⚠️ **MNN**：模型可转换，但现有 Rust 封装（wrapper）尚不成熟，文档缺失且接口不稳定，尚未能稳定运行推理流程。
+* ❌ **MNN**：模型可转换，使用MNN 3.2.0 C++ API，可以正常载入转换之后的模型，但运行时，decoder的x_example无法被session分配有效内存，或者直接缺失输入（取决于使用onnx原模型或者optimize_aio.py脚本之后的模型，可能是MNN的BUG）， 因个人时间/能力有限，暂时放弃MNN方案。
 
 ---
 
