@@ -18,16 +18,17 @@ fn main() -> Result<(), GSVError> {
         assets_dir.join("kaoyu_t2s_fs_decoder.onnx"),
         assets_dir.join("kaoyu_t2s_s_decoder.onnx"),
         24,
+        Some(assets_dir.join("kaoyu_bert.onnx")),
     )?;
 
     // Process reference audio and text synchronously
     model.process_reference_sync(
         assets_dir.join("ref.wav"),
-        "格式化，可以给自家的奶带来大量的",
+        "格式化，可以给自家的奶带来大量的。",
     )?;
 
     // Run inference synchronously
-    let (spec, samples) = model.run_sync("小鱼想成为你的好朋友，而不仅仅是一个可爱的AI助理")?;
+    let (spec, samples) = model.run_sync("小鱼想成为你的好朋友，而不仅仅是一个可爱的AI助理。")?;
 
     // Write to WAV file
     {

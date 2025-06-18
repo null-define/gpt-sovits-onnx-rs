@@ -37,6 +37,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     t2s_encoder_path: JString,
     t2s_fs_decoder_path: JString,
     t2s_s_decoder_path: JString,
+    bert_path: JString,
     max_length: jlong,
 ) -> jlong {
     init_logging();
@@ -108,6 +109,19 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
         }
     };
 
+    let bert: String = match env.get_string(&bert_path) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get t2s s decoder path: {}", e),
+            )
+            .expect("Failed to throw exception");
+            return 0;
+        }
+    };
+
+
     // Convert max_length from jlong to usize
     let max_length_usize = match max_length.try_into() {
         Ok(val) => val,
@@ -129,6 +143,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
         Path::new(&t2s_fs_decoder),
         Path::new(&t2s_s_decoder),
         max_length_usize,
+         Some(Path::new(&bert)),
     ) {
         Ok(model) => Box::into_raw(Box::new(model)) as jlong,
         Err(e) => {

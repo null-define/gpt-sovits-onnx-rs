@@ -3,9 +3,12 @@ use futures::{StreamExt, stream::Stream};
 use hound::{WavReader, WavSpec};
 use jieba_rs::Jieba;
 use log::{debug, error, info};
-use ndarray::{Array, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, ViewRepr, s};
+use ndarray::{
+    Array, Array1, Array2, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, ViewRepr,
+    concatenate, s,
+};
 use ort::session::{Session, builder::GraphOptimizationLevel};
-use ort::value::{TensorRef, Value};
+use ort::value::{Tensor, TensorRef, Value};
 use ort::{
     execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
     inputs,
@@ -14,6 +17,7 @@ use std::num::NonZero;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{fs::File, path::Path, time::SystemTime};
+use tokenizers::Tokenizer;
 use tokio::task::block_in_place;
 
 mod error;
@@ -28,6 +32,28 @@ const EARLY_STOP_NUM: usize = 1500; // Match old code's max iteration limit
 const T2S_DECODER_EOS: usize = 1024; // Assuming EOS token remains consistent
 
 type InternalDType = f32; // Verify with model specs; f16 may be needed if model expects it
+
+static BERT_TOKENIZER: &str = include_str!("../resource/g2pw_tokenizer.json");
+
+fn build_phone_level_feature(res: Array2<f32>, word2ph: Array1<i32>) -> Array2<f32> {
+    let mut phone_level_feature: Vec<Array2<f32>> = Vec::new();
+
+    for i in 0..word2ph.len() {
+        let repeat_count = word2ph[i] as usize;
+        let row = res.row(i);
+        let repeat_feature = Array2::from_shape_fn((repeat_count, res.ncols()), |(j, k)| row[k]);
+        phone_level_feature.push(repeat_feature);
+    }
+
+    concatenate(
+        Axis(0),
+        &phone_level_feature
+            .iter()
+            .map(|x| x.view())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap()
+}
 
 // Struct to hold reference data
 #[derive(Clone)]
@@ -46,6 +72,8 @@ pub struct TTSModel {
     t2s_encoder: Session,
     t2s_fs_decoder: Session,
     t2s_s_decoder: Session,
+    bert: Option<Session>,
+    bert_tokenizer: Arc<Tokenizer>,
     ref_data: Option<ReferenceData>,
     num_layers: usize,
 }
@@ -59,6 +87,7 @@ impl TTSModel {
         t2s_fs_decoder_path: P,
         t2s_s_decoder_path: P,
         num_layers: usize,
+        bert_path: Option<P>,
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
 
@@ -80,8 +109,15 @@ impl TTSModel {
 
         let g2pw_session = make_cpu_session()?.commit_from_file(g2pw_path)?;
 
+        let mut bert = None;
+        if let Some(bert_path) = bert_path {
+            bert = Some(make_cpu_session()?.commit_from_file(bert_path)?);
+        }
+
         let tokenizer =
             Arc::new(tokenizers::Tokenizer::from_str(text::g2pw::G2PW_TOKENIZER).unwrap());
+
+        let bert_tokenizer = Arc::new(tokenizers::Tokenizer::from_str(BERT_TOKENIZER).unwrap());
 
         let text_processor = TextProcessor {
             jieba: Jieba::new(),
@@ -96,6 +132,8 @@ impl TTSModel {
             t2s_encoder,
             t2s_fs_decoder,
             t2s_s_decoder,
+            bert,
+            bert_tokenizer,
             ref_data: None,
             num_layers,
         })
@@ -125,11 +163,52 @@ impl TTSModel {
         } else {
             ref_text.to_string()
         };
-        let ref_seq = self.text_processor.get_phone(&ref_text)?.concat();
+        let phones = self.text_processor.get_phone(&ref_text)?;
+        let ref_seq: Vec<Vec<i64>> = phones.clone().into_iter().map(|f| f.2).collect();
+        let word2ph: Vec<Vec<i32>> = phones.into_iter().map(|f| f.1).collect();
+        let ref_seq = ref_seq.concat();
+        let word2ph = word2ph.concat();
         debug!("Reference phoneme: {:?}", ref_seq);
         let ref_seq = Array::from_shape_vec((1, ref_seq.len()), ref_seq)
             .map_err(|e| GSVError::from(format!("Failed to create ref_seq array: {}", e)))?;
-        let ref_bert = Array::<f32, _>::zeros((ref_seq.shape()[1], 1024));
+        let mut ref_bert = Array::<f32, _>::zeros((ref_seq.shape()[1], 1024));
+        if let (Some(bert_session)) = self.bert.as_mut() {
+            let encoding = self.bert_tokenizer.encode(ref_text.clone(), true).unwrap();
+            // Extract input_ids, attention_mask, and token_type_ids as tensors
+            let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+            let attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&m| m as i64)
+                .collect();
+            let token_type_ids: Vec<i64> =
+                encoding.get_type_ids().iter().map(|&t| t as i64).collect();
+            // Create word2ph array based on the text
+
+            let attention_mask_tensor = Tensor::from_array(Array::from_shape_vec(
+                (1, attention_mask.len()),
+                attention_mask,
+            )?)?;
+            let input_ids_tensor =
+                Tensor::from_array(Array::from_shape_vec((1, input_ids.len()), input_ids)?)?;
+            let token_type_ids_tensor = Tensor::from_array(Array::from_shape_vec(
+                (1, token_type_ids.len()),
+                token_type_ids,
+            )?)?;
+            let bert_out = bert_session.run(ort::inputs![
+            "attention_mask" => attention_mask_tensor,
+            "input_ids" => input_ids_tensor,
+            "token_type_ids" => token_type_ids_tensor
+            ])?;
+
+            let bert_feature = bert_out["bert_feature"]
+                .try_extract_array::<f32>()?
+                .into_owned();
+            let bert_feature_2d: Array2<f32> = bert_feature
+                .into_dimensionality::<ndarray::Dim<[usize; 2]>>()
+                .map_err(|e| format!("Expected 2D array, got shape error: {}", e))?;
+            ref_bert = build_phone_level_feature(bert_feature_2d, Array::from_vec(word2ph));
+        }
 
         let file = File::open(&reference_audio_path)
             .map_err(|e| GSVError::from(format!("Failed to open reference audio: {}", e)))?;
@@ -241,7 +320,8 @@ impl TTSModel {
             {
                 let seq_len = y.shape()[1];
                 let pred_semantic = y
-                    .slice_axis(Axis(1), Slice::from(prefix_len + 1..seq_len))
+                    // I don't know why, sometimes the output head may contains strange sound
+                    .slice_axis(Axis(1), Slice::from(prefix_len + 5..seq_len))
                     .into_owned()
                     .map(|i| {
                         if *i == (T2S_DECODER_EOS as i64) {
@@ -285,13 +365,12 @@ impl TTSModel {
         } else {
             text.to_string()
         };
-        let text_seqs = self.text_processor.get_phone(&text)?;
+        let texts_and_seqs = self.text_processor.get_phone(&text)?;
 
         let ref_data = ref_data.clone();
-
         let stream = stream! {
-            for text_seq_vec in text_seqs {
-                match self.in_stream_once_gen(&text_seq_vec, &ref_data).await {
+            for texts_and_seq in texts_and_seqs {
+                match self.in_stream_once_gen(&texts_and_seq.0, &texts_and_seq.1, &texts_and_seq.2 ,&ref_data).await {
                     Ok(samples) => {
                         debug!("Yielding {} samples for normalized text", samples.len());
                         for sample in samples {
@@ -311,6 +390,8 @@ impl TTSModel {
 
     async fn in_stream_once_gen(
         &mut self,
+        text: &String,
+        word2ph: &Vec<i32>,
         text_seq_vec: &Vec<i64>,
         ref_data: &ReferenceData,
     ) -> Result<Vec<f32>, GSVError> {
@@ -319,7 +400,53 @@ impl TTSModel {
 
         let text_seq = Array::from_shape_vec((1, text_seq_vec.len()), text_seq_vec.to_vec())
             .map_err(|e| GSVError::from(format!("Failed to create text_seq array: {}", e)))?;
-        let text_bert = Array::<f32, _>::zeros((text_seq.shape()[1], 1024));
+        let mut text_bert = Array::<f32, _>::zeros((text_seq.shape()[1], 1024));
+        if let Some(bert_session) = self.bert.as_mut() {
+            let encoding = self.bert_tokenizer.encode(text.clone(), true).unwrap();
+            // Extract input_ids, attention_mask, and token_type_ids as tensors
+            let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+            let attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&m| m as i64)
+                .collect();
+            let token_type_ids: Vec<i64> =
+                encoding.get_type_ids().iter().map(|&t| t as i64).collect();
+
+            debug!("word2ph: {:?}", word2ph);
+            debug!("attention_mask_tensor: {}", attention_mask.len());
+            debug!("input_ids_tensor: {}", input_ids.len());
+            debug!("token_type_ids_tensor: {}", token_type_ids.len());
+
+            let attention_mask_tensor = Tensor::from_array(Array::from_shape_vec(
+                (1, attention_mask.len()),
+                attention_mask,
+            )?)?;
+            let input_ids_tensor =
+                Tensor::from_array(Array::from_shape_vec((1, input_ids.len()), input_ids)?)?;
+            let token_type_ids_tensor = Tensor::from_array(Array::from_shape_vec(
+                (1, token_type_ids.len()),
+                token_type_ids,
+            )?)?;
+
+            let bert_out = bert_session.run(ort::inputs![
+                    "attention_mask" => attention_mask_tensor,
+                    "input_ids" => input_ids_tensor,
+                    "token_type_ids" => token_type_ids_tensor
+            ])?;
+
+            let bert_feature = bert_out["bert_feature"]
+                .try_extract_array::<f32>()?
+                .into_owned();
+            let bert_feature_2d: Array2<f32> = bert_feature
+                .into_dimensionality::<ndarray::Dim<[usize; 2]>>()
+                .map_err(|e| format!("Expected 2D array, got shape error: {}", e))?;
+            text_bert =
+                build_phone_level_feature(bert_feature_2d, Array::from_vec(word2ph.to_vec()));
+        }
+
+        debug!("ref_data.ref_bert {:?}", ref_data.ref_bert);
+        debug!("text_bert {:?}", text_bert);
 
         let time = SystemTime::now();
         let x_owned: ArrayBase<OwnedRepr<f32>, Dim<IxDynImpl>>;

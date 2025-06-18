@@ -122,8 +122,8 @@ class T2SModel(nn.Module):
             dynamic_axes={
                 "ref_seq": {1: "ref_length"},
                 "text_seq": {1: "text_length"},
-                "ref_bert": {0: "ref_length"},
-                "text_bert": {0: "text_length"},
+                "ref_bert": {0: "ref_bert_length"},
+                "text_bert": {0: "text_bert_length"},
                 "ssl_content": {2: "ssl_length"},
             },
             opset_version=20,
@@ -250,6 +250,81 @@ class SSLModel(nn.Module):
     def forward(self, ref_audio_16k):
         return self.ssl.model(ref_audio_16k)["last_hidden_state"].transpose(1, 2)
 
+# @torch.jit.script
+# def build_phone_level_feature(res: Tensor, word2ph: IntTensor):
+#     phone_level_feature = []
+#     for i in range(word2ph.shape[0]):
+#         repeat_feature = res[i].repeat(word2ph[i].item(), 1)
+#         phone_level_feature.append(repeat_feature)
+#     phone_level_feature = torch.cat(phone_level_feature, dim=0)
+#     # [sum(word2ph), 1024]
+#     return phone_level_feature
+
+
+class MyBertModel(torch.nn.Module):
+    def __init__(self, bert_model):
+        super(MyBertModel, self).__init__()
+        self.bert = bert_model
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        token_type_ids: torch.Tensor,
+    ):
+        outputs = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+        )
+        res = torch.cat(outputs["hidden_states"][-3:-2], -1)[0][1:-1]
+        # res = torch.cat(outputs[1][-3:-2], -1)[0][1:-1]
+        # return build_phone_level_feature(res, word2ph) #directly using this may cause bug and add a subgraph, use rust code
+        return res
+
+
+def export_bert(project_name):
+    bert_path = os.environ.get(
+        "bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(bert_path)
+
+    text = "叹息声一声接着一声传出,木兰对着房门织布.听不见织布机织布的声音,只听见木兰在叹息.问木兰在想什么?问木兰在惦记什么?木兰答道,我也没有在想什么,也没有在惦记什么."
+    ref_bert_inputs = tokenizer(text, return_tensors="pt")
+    word2ph = []
+    for c in text:
+        if c in ["，", "。", "：", "？", ",", ".", "?"]:
+            word2ph.append(1)
+        else:
+            word2ph.append(2)
+    ref_bert_inputs["word2ph"] = torch.Tensor(word2ph).int()
+
+    bert_model = AutoModelForMaskedLM.from_pretrained(
+        bert_path, output_hidden_states=True,
+    )
+    my_bert_model = MyBertModel(bert_model)
+
+    torch.onnx.export(
+        my_bert_model,
+        (
+            ref_bert_inputs["input_ids"],
+            ref_bert_inputs["attention_mask"],
+            ref_bert_inputs["token_type_ids"],
+        ),
+        f"onnx/{project_name}/{project_name}_bert.onnx",
+        input_names=["input_ids", "attention_mask", "token_type_ids"],
+        output_names=["bert_feature"],
+        dynamic_axes={
+            "input_ids": {1: "input_ids_length"},
+            "attention_mask": {1: "attention_mask_len"},
+            "token_type_ids": {1: "token_type_ids_len"},
+        },
+        opset_version=20,
+        verbose=False,
+    )
+    print("#### exported bert ####")
+
+
 def export(vits_path, gpt_path, project_name, vits_model="v2"):
     vits = VitsModel(vits_path)
     gpt = T2SModel(gpt_path, vits)
@@ -282,6 +357,7 @@ def export(vits_path, gpt_path, project_name, vits_model="v2"):
         opset_version=20,
         verbose=False
     )
+    export_bert(project_name)
     gpt_sovits.export(ref_seq, text_seq, ref_bert, text_bert, ref_audio_sr, ssl_content, project_name)
 
     a = gpt_sovits(ref_seq, text_seq, ref_bert, text_bert, ref_audio_sr, ssl_content).detach().cpu().numpy()

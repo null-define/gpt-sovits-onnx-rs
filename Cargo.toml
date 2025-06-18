@@ -42,6 +42,7 @@ tokenizers = { version = "0.20.0", default-features = false, features = [
     "onig",
 ] }
 jni = { version = "0.21", optional = true }
+once_cell = "1.21.3"
 
 [features]
 jni = ["dep:jni"] # Enables JNI and dynamic ONNX loading for Android

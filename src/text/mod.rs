@@ -5,8 +5,8 @@ use std::{
 };
 
 use jieba_rs::Jieba;
-
 use log::debug;
+use once_cell::sync::Lazy;
 use pest::Parser;
 
 pub mod dict;
@@ -14,12 +14,18 @@ pub mod g2pw;
 pub mod num;
 pub mod symbols;
 
+// Static list of consonants for split_zh_ph_
+static CONSONANTS: &[char] = &[
+    'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'r', 'z', 'c', 's', 'y',
+    'w',
+];
+
 #[inline]
 fn get_phone_symbol(symbols: &HashMap<String, i64>, ph: &str) -> i64 {
-    // symbols[','] : 3
-    symbols.get(ph).map(|id| *id).unwrap_or(3)
+    symbols.get(ph).copied().unwrap_or(3)
 }
 
+// Optimized phoneme splitting function
 fn split_zh_ph(ph: &str) -> (&str, &str) {
     match ph {
         "a" => ("AA", "a5"),
@@ -281,7 +287,6 @@ fn split_zh_ph(ph: &str) -> (&str, &str) {
         "si4" => ("s", "i04"),
         "si5" => ("s", "i05"),
 
-        //['a', 'o', 'e', 'i', 'u', 'ü', 'ai', 'ei', 'ao', 'ou', 'ia', 'ie', 'ua', 'uo', 'üe', 'iao', 'iou', 'uai', 'uei', 'an', 'en', 'ang', 'eng', 'ian', 'in', 'iang', 'ing', 'uan', 'un', 'uang', 'ong', 'üan', 'ün', 'er']
         ph => match split_zh_ph_(ph) {
             (y, "ü") => (y, "v5"),
             (y, "ü1") => (y, "v1"),
@@ -344,15 +349,12 @@ fn split_zh_ph(ph: &str) -> (&str, &str) {
     }
 }
 
+// Helper function to split phonemes based on consonants
+#[inline]
 fn split_zh_ph_(ph: &str) -> (&str, &str) {
     if ph.starts_with("zh") || ph.starts_with("ch") || ph.starts_with("sh") {
         ph.split_at(2)
-    } else if ph.starts_with(&[
-        'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'r', 'z', 'c', 's',
-        'y', 'w',
-    ]) {
-        // b p m f d t n l g k h j q x r z c s y w
-
+    } else if ph.chars().next().map_or(false, |c| CONSONANTS.contains(&c)) {
         ph.split_at(1)
     } else {
         (ph, ph)
@@ -367,20 +369,16 @@ pub struct TextProcessor {
 
 impl TextProcessor {
     /// Converts text to phoneme sequences, splitting long sentences to ensure each has >8 words.
-    pub fn get_phone(&mut self, text: &str) -> anyhow::Result<Vec<Vec<i64>>> {
+    pub fn get_phone(&mut self, text: &str) -> anyhow::Result<Vec<(String, Vec<i32>, Vec<i64>)>> {
         if text.trim().is_empty() {
             return Err(anyhow::anyhow!("Input text is empty"));
         }
 
-        // Split text into chunks with >8 words/characters
-        let chunks = split_text(text, usize::MAX); // Use large max_chunk_size to rely on word count
-        let mut phone_seq = Vec::new();
+        let chunks = split_text(text, usize::MAX);
+        let mut result = Vec::new();
 
-        for chunk in chunks {
+        for chunk in &chunks {
             log::debug!("Processing chunk: {:?}", chunk);
-
-            // Validate chunk size (>8 words for English, >8 characters for Chinese)
-            // Build phonemes for the chunk
             let mut phone_builder = PhoneBuilder::new();
             phone_builder.push_text(&self.jieba, &chunk);
 
@@ -388,6 +386,7 @@ impl TextProcessor {
                 phone_builder.push_punctuation(".");
             }
             let mut single_phone_seq = Vec::new();
+            let mut single_word2ph = Vec::new();
 
             for sentence in phone_builder.sentence {
                 match sentence {
@@ -395,7 +394,10 @@ impl TextProcessor {
                         log::debug!("Processing Zh text: {:?}", zh.zh_text);
                         zh.generate_pinyin(self);
                         match zh.build_phone() {
-                            Ok(phones) => single_phone_seq.push(phones),
+                            Ok(phones) => {
+                                single_phone_seq.extend(phones);
+                                single_word2ph.extend(zh.word2ph);
+                            }
                             Err(e) => {
                                 log::warn!(
                                     "Failed to build phones for Zh text '{}': {}",
@@ -412,7 +414,11 @@ impl TextProcessor {
                         log::debug!("Processing En text: {:?}", en.en_text);
                         en.generate_phones(self);
                         match en.build_phone() {
-                            Ok(phones) => single_phone_seq.push(phones),
+                            Ok(phones) => {
+                                single_phone_seq.extend(phones);
+                                // For English, assume one phoneme per word for simplicity
+                                single_word2ph.extend(vec![1; en.en_text.len()]);
+                            }
                             Err(e) => {
                                 log::warn!(
                                     "Failed to build phones for En text {:?}: {}",
@@ -431,11 +437,41 @@ impl TextProcessor {
                             match s {
                                 Sentence::Zh(mut zh) => {
                                     zh.generate_pinyin(self);
-                                    single_phone_seq.push(zh.build_phone()?);
+                                    match zh.build_phone() {
+                                        Ok(phones) => {
+                                            single_phone_seq.extend(phones);
+                                            single_word2ph.extend(zh.word2ph);
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "Failed to build phones for Zh num text '{}': {}",
+                                                zh.zh_text,
+                                                e
+                                            );
+                                            if cfg!(debug_assertions) {
+                                                return Err(e);
+                                            }
+                                        }
+                                    }
                                 }
                                 Sentence::En(mut en) => {
                                     en.generate_phones(self);
-                                    single_phone_seq.push(en.build_phone()?);
+                                    match en.build_phone() {
+                                        Ok(phones) => {
+                                            single_phone_seq.extend(phones);
+                                            single_word2ph.extend(vec![1; en.en_text.len()]);
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "Failed to build phones for En num text {:?}: {}",
+                                                en.en_text,
+                                                e
+                                            );
+                                            if cfg!(debug_assertions) {
+                                                return Err(e);
+                                            }
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }
@@ -443,31 +479,29 @@ impl TextProcessor {
                     }
                 }
             }
-            let concat_seq = single_phone_seq.concat();
-            if !concat_seq.is_empty() {
-                phone_seq.push(concat_seq);
+            if !single_phone_seq.is_empty() {
+                result.push((chunk.clone(), single_word2ph, single_phone_seq));
             }
         }
 
-        if phone_seq.is_empty() {
+        if result.is_empty() {
             return Err(anyhow::anyhow!("No phonemes generated for text: {}", text));
         }
-        Ok(phone_seq)
+        Ok(result)
     }
 }
 
-/// Modified split_text to ensure chunks have >8 words/characters
+/// Splits text into chunks with >8 words/characters
 pub fn split_text(text: &str, _max_chunk_size: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![];
     }
 
     let is_en = text.is_ascii();
-    let mut chunks = vec![];
-    let mut start_text = text;
+    let mut chunks = Vec::new();
+    let mut current_chunk = String::with_capacity(text.len());
     let mut total_count = 0;
     let mut split_index = 0;
-    let mut current_chunk = String::new();
 
     for segment in text.split_inclusive(is_punctuation) {
         let count = if is_en {
@@ -484,31 +518,22 @@ pub fn split_text(text: &str, _max_chunk_size: usize) -> Vec<String> {
             split_index
         );
 
-        if segment.chars().count() == 1 && is_punctuation(segment.chars().next().unwrap()) {
-            current_chunk.push_str(segment);
-            split_index += segment.len();
-            continue;
-        }
-
         current_chunk.push_str(segment);
         total_count += count;
 
         if total_count > 8 && (segment.ends_with(['。', '.', '?', '？', '!', '！', '\n'])) {
-            let trimmed: &&str = &current_chunk.trim();
+            let trimmed = current_chunk.trim();
             if !trimmed.is_empty() {
                 chunks.push(trimmed.to_string());
             }
-            start_text = &start_text[split_index..];
-            split_index = segment.len();
+            current_chunk.clear();
             total_count = 0;
-            current_chunk = String::new();
-        } else {
-            split_index += segment.len();
         }
+        split_index += segment.len();
     }
 
     if !current_chunk.trim().is_empty() {
-        chunks.push(current_chunk.trim().to_owned());
+        chunks.push(current_chunk.trim().to_string());
     }
     debug!("chunks {:?}", chunks);
     chunks
@@ -675,10 +700,6 @@ impl NumSentence {
     }
 
     fn to_phone_sentence(&self) -> anyhow::Result<LinkedList<Sentence>> {
-        // match self.lang {
-        //     Lang::Zh => text::num_to_zh_text(symbols, &self.num_text, last_char_is_punctuation),
-        //     Lang::En => text::num_to_en_text(symbols, &self.num_text, last_char_is_punctuation),
-        // }
         let mut builder = PhoneBuilder::new();
         let pairs = num::ExprParser::parse(num::Rule::all, &self.num_text)?;
         for pair in pairs {
@@ -687,7 +708,6 @@ impl NumSentence {
                 Lang::En => num::en::parse_all(pair, &mut builder)?,
             }
         }
-
         Ok(builder.sentence)
     }
 }
@@ -729,7 +749,6 @@ fn parse_punctuation(p: &str) -> Option<&'static str> {
         "/" => Some(","),
         "\n" => Some("."),
         " " => Some(" "),
-        // " " => Some("\u{7a7a}"),
         _ => None,
     }
 }
@@ -780,10 +799,7 @@ impl PhoneBuilder {
                     && en
                         .en_text
                         .last()
-                        .map(|w| match w {
-                            EnWord::Word(p) => p == "a",
-                            _ => false,
-                        })
+                        .map(|w| matches!(w, EnWord::Word(w) if w == "a"))
                         .unwrap_or(false)
                 {
                     return;
@@ -813,7 +829,7 @@ impl PhoneBuilder {
                 if en
                     .en_text
                     .last()
-                    .map(|w| w == &EnWord::Punctuation("'") || w == &EnWord::Punctuation("-"))
+                    .map(|w| matches!(w, EnWord::Punctuation(p) if *p == "'" || *p == "-"))
                     .unwrap_or(false)
                 {
                     let p = en.en_text.pop().unwrap();
@@ -828,10 +844,7 @@ impl PhoneBuilder {
                 } else if en
                     .en_text
                     .last()
-                    .map(|w| match w {
-                        EnWord::Word(w) => w == "a",
-                        _ => false,
-                    })
+                    .map(|w| matches!(w, EnWord::Word(w) if w == "a"))
                     .unwrap_or(false)
                 {
                     en.en_text.last_mut().map(|w| {
@@ -899,7 +912,7 @@ impl PhoneBuilder {
                 h(&mut zh, word);
                 self.sentence.push_back(Sentence::Zh(zh));
             }
-        };
+        }
     }
 
     pub fn push_num_word(&mut self, word: &str) {
