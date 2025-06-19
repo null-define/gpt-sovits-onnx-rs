@@ -56,20 +56,19 @@ def validate_environment():
 def process_model(file_path, output_path):
     logger.info(f"Processing model: {file_path}")
     model = onnx.load(file_path)
-
-    # convert to fp6 with these 2 models because they are huge,but no performance benefit
-    # if "g2p" in file_path.lower():
-    #     model = float16.convert_float_to_float16(model, keep_io_types=True)
-    #     logger.info(f"FP16 conversion done for: {output_path}")
-    #     if "g2p" in file_path.lower():
-    #         onnx.save(model, output_path)  # Ensure model is saved
-    #         return output_path
-    # model = version_converter.convert_version(model, 21)
-    # change and simplify except vits because vits model has bug
     if not "bert" in output_path.lower():
-        # bert model have issue in "simplify" process
         model, _ = simplify(model, include_subgraph=True)
         logger.info(f"ONNX simplification done for: {output_path}")
+    else:
+        # bert model use transformers optimizer
+        from onnxruntime.transformers import optimizer
+        model = version_converter.convert_version(model, 21)
+        optimized_model = optimizer.optimize_model(
+            model, model_type="bert", num_heads=16, hidden_size=1024
+        )
+        optimized_model.convert_float_to_float16()
+        optimized_model.save_model_to_file(output_path)
+        return output_path
     # optimize for all
     model = optimize(
         model=model,
@@ -83,14 +82,17 @@ def process_model(file_path, output_path):
     logger.info(f"ONNX slim optimization done for: {output_path}")
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
-
+    # convert to fp6 with these 2 models because they are huge
+    if "g2p" in file_path.lower() or "ssl" in file_path.lower():
+        model = float16.convert_float_to_float16(model, keep_io_types=True)
+        logger.info(f"FP16 conversion done for: {output_path}")
     onnx.save(model, output_path)  # Ensure model is saved
 
     # quant decoder to int8 if you want, this may hurt emotion performance
-    #
     # if "decoder" in output_path.lower():
     #     model = quantize_dynamic(model, output_path)
     #     logger.info(f"INT8 quant done for: {output_path}")
+
     # use ort on-device optimizer to get better performance
     # import onnxruntime as rt
     # sess_options = rt.SessionOptions()
