@@ -2,9 +2,9 @@ use async_stream::stream;
 use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
 use jieba_rs::Jieba;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use ndarray::{
-    Array1, Array2, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, concatenate, s,
+    Array, Array1, Array2, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, concatenate, s,
 };
 use ort::{
     execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
@@ -52,6 +52,12 @@ pub struct TTSModel {
     num_layers: usize,
 }
 
+// --- KV Cache Configuration ---
+/// Initial size for the sequence length of the KV cache.
+const INITIAL_CACHE_SIZE: usize = 2048;
+/// How much to increment the KV cache size by when reallocating.
+const CACHE_REALLOC_INCREMENT: usize = 1024;
+
 impl TTSModel {
     pub fn new<P: AsRef<Path>>(
         g2pw_path: P,
@@ -74,6 +80,17 @@ impl TTSModel {
                 .with_intra_threads(8)?
                 .commit_from_file(path)
         };
+
+        // let create_session_with_profiling = |path: P| {
+        //     Session::builder()?
+        //         .with_execution_providers([CPUExecutionProvider::default()
+        //             .with_arena_allocator(true)
+        //             .build()])?
+        //         .with_optimization_level(GraphOptimizationLevel::Level3)?
+        //         .with_intra_threads(8)?
+        //         .with_profiling("t2sd")?
+        //         .commit_from_file(path)
+        // };
 
         Ok(TTSModel {
             text_processor: TextProcessor {
@@ -183,7 +200,7 @@ impl TTSModel {
         let ssl_output = self
             .ssl
             .run(inputs!["ref_audio_16k" => TensorRef::from_array_view(ref_audio_16k).unwrap()])?;
-        info!("SSL processing time: {:?}", time.elapsed()?);
+        debug!("SSL processing time: {:?}", time.elapsed()?);
         Ok(ssl_output["ssl_content"]
             .try_extract_array::<f32>()?
             .into_owned())
@@ -197,6 +214,7 @@ impl TTSModel {
         Self::run_async_in_context(self.process_reference(reference_audio_path, ref_text))
     }
 
+    /// Efficiently runs the streaming decoder loop with a pre-allocated, resizable KV cache.
     fn run_t2s_s_decoder_loop(
         &mut self,
         mut y: ArrayBase<OwnedRepr<i64>, IxDyn>,
@@ -205,10 +223,13 @@ impl TTSModel {
         mut k_caches: Vec<ArrayBase<OwnedRepr<KvDType>, IxDyn>>,
         mut v_caches: Vec<ArrayBase<OwnedRepr<KvDType>, IxDyn>>,
         prefix_len: usize,
+        initial_valid_len: usize,
     ) -> Result<ArrayBase<OwnedRepr<i64>, IxDyn>, GSVError> {
         let mut idx = 1;
+        let mut valid_len = initial_valid_len;
+
         loop {
-            let time = SystemTime::now();
+            // --- 1. Prepare inputs using views of the valid cache portion ---
             let mut inputs = inputs![
                 "iy" => TensorRef::from_array_view(&y).unwrap(),
                 "iy_emb" => TensorRef::from_array_view(&y_emb).unwrap(),
@@ -216,33 +237,85 @@ impl TTSModel {
             ];
 
             for i in 0..self.num_layers {
+                // Create a view of the valid part of the cache
+                let k_view = k_caches[i].slice(s![0..valid_len, .., ..]);
+                let v_view = v_caches[i].slice(s![0..valid_len, .., ..]);
+
                 inputs.push((
                     format!("ik_cache_{}", i).into(),
-                    TensorRef::from_array_view(&k_caches[i])?.into(),
+                    TensorRef::from_array_view(k_view)?.into(),
                 ));
                 inputs.push((
                     format!("iv_cache_{}", i).into(),
-                    TensorRef::from_array_view(&v_caches[i])?.into(),
+                    TensorRef::from_array_view(v_view)?.into(),
                 ));
             }
 
+            // --- 2. Run the decoder model for one step ---
             let output = self.t2s_s_decoder.run(inputs)?;
-            debug!(
-                "T2S S Decoder iteration {} time: {:?}",
-                idx,
-                time.elapsed()?
-            );
 
             y = output["y"].try_extract_array::<i64>()?.into_owned();
             y_emb = output["y_emb"].try_extract_array::<f32>()?.into_owned();
-            for i in 0..self.num_layers {
-                k_caches[i] = output[format!("k_cache_{}", i)]
-                    .try_extract_array::<KvDType>()?
-                    .into_owned();
-                v_caches[i] = output[format!("v_cache_{}", i)]
-                    .try_extract_array::<KvDType>()?
-                    .into_owned();
+
+            // --- 3. Check for reallocation and update caches ---
+            let new_valid_len = valid_len + 1;
+
+            // Check if we need to reallocate BEFORE writing to the new index.
+            if new_valid_len > k_caches[0].shape()[0] {
+                info!(
+                    "Reallocating KV cache from {} to {}",
+                    k_caches[0].shape()[0],
+                    k_caches[0].shape()[0] + CACHE_REALLOC_INCREMENT
+                );
+                for i in 0..self.num_layers {
+                    let old_k = &k_caches[i];
+                    let old_v = &v_caches[i];
+
+                    // Create new, larger arrays
+                    let mut new_k_dims = old_k.raw_dim().clone();
+                    new_k_dims[0] += CACHE_REALLOC_INCREMENT;
+                    let mut new_v_dims = old_v.raw_dim().clone();
+                    new_v_dims[0] += CACHE_REALLOC_INCREMENT;
+
+                    let mut new_k = Array::zeros(new_k_dims);
+                    let mut new_v = Array::zeros(new_v_dims);
+
+                    // Copy existing valid data to the new arrays
+                    new_k
+                        .slice_mut(s![0..valid_len, ..])
+                        .assign(&old_k.slice(s![0..valid_len, .., ..]));
+                    new_v
+                        .slice_mut(s![0..valid_len, ..])
+                        .assign(&old_v.slice(s![0..valid_len, .., ..]));
+
+                    // Replace the old caches with the new, larger ones
+                    k_caches[i] = new_k;
+                    v_caches[i] = new_v;
+                }
             }
+
+            // Update KV caches by pasting the newly generated slice of data
+            for i in 0..self.num_layers {
+                let inc_k_cache =
+                    output[format!("k_cache_{}", i)].try_extract_array::<KvDType>()?;
+                let inc_v_cache =
+                    output[format!("v_cache_{}", i)].try_extract_array::<KvDType>()?;
+
+                // The new data is the last row of the incremental output from the model
+                let k_new_slice = inc_k_cache.slice(s![valid_len, .., ..]);
+                let v_new_slice = inc_v_cache.slice(s![valid_len, .., ..]);
+
+                // Paste the new row into our long-running cache at the correct position
+                k_caches[i]
+                    .slice_mut(s![valid_len, .., ..])
+                    .assign(&k_new_slice);
+                v_caches[i]
+                    .slice_mut(s![valid_len, .., ..])
+                    .assign(&v_new_slice);
+            }
+
+            // --- 4. Update valid length and check stop condition ---
+            valid_len = new_valid_len;
 
             if idx > 10
                 && (idx >= 1500
@@ -280,14 +353,15 @@ impl TTSModel {
             sample_format: hound::SampleFormat::Float,
         };
         let text = ensure_punctuation(text);
+        let time = SystemTime::now();
         let texts_and_seqs = self.text_processor.get_phone(&text)?;
+        debug!("g2pw and preprocess time: {:?}", time.elapsed()?);
         let ref_data = ref_data.clone();
 
         let stream = stream! {
             for (text, word2ph, seq) in texts_and_seqs {
                 match self.in_stream_once_gen(&text, &word2ph, &seq, &ref_data).await {
                     Ok(samples) => {
-                        debug!("Yielding {} samples", samples.len());
                         for sample in samples {
                             yield Ok(sample * 4.0);
                         }
@@ -310,7 +384,9 @@ impl TTSModel {
         let text_seq = Array2::from_shape_vec((1, text_seq_vec.len()), text_seq_vec.to_vec())?;
         let mut text_bert = Array2::<f32>::zeros((text_seq.shape()[1], 1024));
         if let Some(_) = self.bert.as_mut() {
+            let time = SystemTime::now();
             text_bert = self.process_bert(&text, &word2ph)?;
+            debug!("bert time: {:?}", time.elapsed()?);
         }
 
         let (x, prompts) = {
@@ -322,7 +398,7 @@ impl TTSModel {
                 "text_bert" => TensorRef::from_array_view(&text_bert)?,
                 "ssl_content" => TensorRef::from_array_view(&ref_data.ssl_content)?
             ])?;
-            info!("T2S Encoder time: {:?}", time.elapsed()?);
+            debug!("T2S Encoder time: {:?}", time.elapsed()?);
             (
                 encoder_output["x"].try_extract_array::<f32>()?.into_owned(),
                 encoder_output["prompts"]
@@ -332,13 +408,13 @@ impl TTSModel {
         };
 
         let prefix_len = prompts.dim()[1];
-        let (y, y_emb, x_example, k_caches, v_caches) = {
+        let (y, y_emb, x_example, k_caches, v_caches, initial_seq_len) = {
             let time = SystemTime::now();
             let fs_decoder_output = self.t2s_fs_decoder.run(inputs![
                 "x" => TensorRef::from_array_view(&x)?,
                 "prompts" => TensorRef::from_array_view(&prompts)?
             ])?;
-            info!("T2S FS Decoder time: {:?}", time.elapsed()?);
+            debug!("T2S FS Decoder time: {:?}", time.elapsed()?);
 
             let y = fs_decoder_output["y"]
                 .try_extract_array::<i64>()?
@@ -349,29 +425,55 @@ impl TTSModel {
             let x_example = fs_decoder_output["x_example"]
                 .try_extract_array::<f32>()?
                 .into_owned();
-            let k_caches = (0..self.num_layers)
-                .map(|i| {
-                    fs_decoder_output[format!("k_cache_{}", i)]
-                        .try_extract_array::<KvDType>()
-                        .unwrap()
-                        .into_owned()
-                })
-                .collect::<Vec<ArrayBase<OwnedRepr<f32>, Dim<IxDynImpl>>>>();
-            let v_caches = (0..self.num_layers)
-                .map(|i| {
-                    fs_decoder_output[format!("v_cache_{}", i)]
-                        .try_extract_array::<KvDType>()
-                        .unwrap()
-                        .into_owned()
-                })
-                .collect::<Vec<ArrayBase<OwnedRepr<f32>, Dim<IxDynImpl>>>>();
-            (y, y_emb, x_example, k_caches, v_caches)
+
+            // --- Initialize large KV Caches ---
+            // Get shape and initial data from the first-pass decoder.
+            let k_init_first = fs_decoder_output["k_cache_0"].try_extract_array::<KvDType>()?;
+            let initial_dims_dyn = k_init_first.raw_dim();
+            let initial_seq_len = initial_dims_dyn[0];
+
+            // Define the shape for our large, pre-allocated cache.
+            let mut large_cache_dims = initial_dims_dyn.clone();
+            large_cache_dims[0] = INITIAL_CACHE_SIZE;
+
+            let mut k_caches = Vec::with_capacity(self.num_layers);
+            let mut v_caches = Vec::with_capacity(self.num_layers);
+
+            for i in 0..self.num_layers {
+                let k_init = fs_decoder_output[format!("k_cache_{}", i).to_string()]
+                    .try_extract_array::<KvDType>()?;
+                let v_init = fs_decoder_output[format!("v_cache_{}", i).to_string()]
+                    .try_extract_array::<KvDType>()?;
+
+                // Create large, zero-initialized caches.
+                let mut k_large = Array::zeros(large_cache_dims.clone());
+                let mut v_large = Array::zeros(large_cache_dims.clone());
+
+                // Copy the initial data from the first-pass decoder into the start of our large caches.
+                k_large
+                    .slice_mut(s![0..initial_seq_len, .., ..])
+                    .assign(&k_init);
+                v_large
+                    .slice_mut(s![0..initial_seq_len, .., ..])
+                    .assign(&v_init);
+
+                k_caches.push(k_large);
+                v_caches.push(v_large);
+            }
+            (y, y_emb, x_example, k_caches, v_caches, initial_seq_len)
         };
 
         let time = SystemTime::now();
-        let pred_semantic =
-            self.run_t2s_s_decoder_loop(y, y_emb, x_example, k_caches, v_caches, prefix_len)?;
-        info!("T2S S Decoder loop time: {:?}", time.elapsed()?);
+        let pred_semantic = self.run_t2s_s_decoder_loop(
+            y,
+            y_emb,
+            x_example,
+            k_caches,
+            v_caches,
+            prefix_len,
+            initial_seq_len,
+        )?;
+        debug!("T2S S Decoder all time: {:?}", time.elapsed()?);
 
         let time = SystemTime::now();
         let outputs = self.sovits.run(inputs![
@@ -379,7 +481,7 @@ impl TTSModel {
             "pred_semantic" => TensorRef::from_array_view(&pred_semantic)?,
             "ref_audio" => TensorRef::from_array_view(&ref_data.ref_audio_32k)?
         ])?;
-        info!("SoVITS time: {:?}", time.elapsed()?);
+        debug!("SoVITS time: {:?}", time.elapsed()?);
         Ok(outputs["audio"]
             .try_extract_array::<f32>()?
             .into_owned()
@@ -413,7 +515,7 @@ fn build_phone_level_feature(res: Array2<f32>, word2ph: Array1<i32>) -> Array2<f
         .enumerate()
         .map(|(i, count)| {
             let row = res.row(i);
-            Array2::from_shape_fn((count as usize, res.ncols()), |(j, k)| row[k])
+            Array2::from_shape_fn((count as usize, res.ncols()), |(_j, k)| row[k])
         })
         .collect::<Vec<_>>();
     concatenate(

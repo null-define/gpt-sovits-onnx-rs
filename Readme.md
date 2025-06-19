@@ -26,8 +26,6 @@ https://github.com/user-attachments/assets/41260271-2af5-4fbc-af5f-1dad7f48aec9
 
 1. 英文/中英混合能力较差，目前部分采用了GPT-SoVITS-Rust的逻辑，使用G2pw处理中文，在一定程度上有所改善，但是仍有差距。
 2. 输出效果稳定性仍较差。
-3. 由于ORT的设计，部分kvcache的拷贝在不修改ORT的前提下无法优化，这个拷贝将每个迭代阻塞了2ms。
-![image](doc/assets/otr_rs_issue.png)
 
 ## 性能信息
 
