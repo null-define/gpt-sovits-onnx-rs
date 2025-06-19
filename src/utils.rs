@@ -1,4 +1,3 @@
-
 use ndarray::{ArrayView, IntoDimension, IxDyn};
 
 // Finds the index of the maximum value in a 2D tensor

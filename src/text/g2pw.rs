@@ -1,7 +1,6 @@
 use ndarray::Array;
-use ort::session::{Session, builder::GraphOptimizationLevel};
-use ort::{execution_providers::CPUExecutionProvider, value::Tensor};
-use std::path::Path;
+use ort::session::{Session};
+use ort::{value::Tensor};
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use crate::utils::*;
@@ -9,7 +8,6 @@ use crate::utils::*;
 static MONO_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_mono_chars.json");
 static POLY_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_poly_chars.json");
 static LABELS: &str = include_str!("../../resource/g2pw/dict_poly_index_list.json");
-pub(crate) static G2PW_TOKENIZER: &str = include_str!("../../resource/g2pw_tokenizer.json");
 
 fn load_mono_chars() -> HashMap<char, MonoChar> {
     if let Ok(dir) = std::env::var("G2PW_DIST_DIR") {
