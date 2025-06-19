@@ -45,7 +45,7 @@ fn main() -> Result<(), GSVError> {
     )?;
 
     const NUM_RUNS: usize = 1;
-    let text = "小鱼想成为你的好朋友，而不仅仅是一个可爱的AI助理。";
+    let text = "小鱼想成为你的好朋友，而不仅仅是一个可爱的AI助理。我想成为一个足够interesting的AI assistant，你呢？";
 
     // Synchronous inference timing
     let mut sync_times = Vec::new();

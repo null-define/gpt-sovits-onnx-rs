@@ -2,15 +2,13 @@ use async_stream::stream;
 use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
 use jieba_rs::Jieba;
-use log::{debug, error, info, warn};
-use ndarray::{
-    Array, Array1, Array2, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, concatenate, s,
-};
+use log::{debug, info};
+use ndarray::{Array, Array1, Array2, ArrayBase, Axis, IxDyn, OwnedRepr, Slice, concatenate, s};
 use ort::{
-    execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
+    execution_providers::CPUExecutionProvider,
     inputs,
     session::{Session, builder::GraphOptimizationLevel},
-    value::{Tensor, TensorRef, Value},
+    value::TensorRef,
 };
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -20,9 +18,8 @@ use tokio::task::block_in_place;
 
 mod error;
 mod text;
-mod utils;
 
-use crate::text::{TextProcessor, g2pw::G2PWConverter};
+use crate::text::{TextProcessor, bert::BertModel, g2pw::G2PWConverter};
 pub use error::GSVError;
 
 const EARLY_STOP_NUM: usize = 1500;
@@ -46,8 +43,6 @@ pub struct TTSModel {
     t2s_encoder: Session,
     t2s_fs_decoder: Session,
     t2s_s_decoder: Session,
-    bert: Option<Session>,
-    bert_tokenizer: Arc<Tokenizer>,
     ref_data: Option<ReferenceData>,
     num_layers: usize,
 }
@@ -93,21 +88,23 @@ impl TTSModel {
         // };
 
         Ok(TTSModel {
-            text_processor: TextProcessor {
-                jieba: Jieba::new(),
-                g2pw: G2PWConverter::new(
+            text_processor: TextProcessor::new(
+                Jieba::new(),
+                G2PWConverter::new(
                     create_session(g2pw_path)?,
                     Arc::new(Tokenizer::from_str(BERT_TOKENIZER).unwrap()),
                 )?,
-                symbols: text::symbols::SYMBOLS.clone(),
-            },
+                BertModel::new(
+                    bert_path.map(|p| create_session(p)).transpose().unwrap(),
+                    Arc::new(Tokenizer::from_str(BERT_TOKENIZER).unwrap()),
+                )?,
+                text::symbols::SYMBOLS.clone(),
+            )?,
             sovits: create_session(sovits_path)?,
             ssl: create_session(ssl_path)?,
             t2s_encoder: create_session(t2s_encoder_path)?,
             t2s_fs_decoder: create_session(t2s_fs_decoder_path)?,
             t2s_s_decoder: create_session(t2s_s_decoder_path)?,
-            bert: bert_path.map(|p| create_session(p)).transpose()?,
-            bert_tokenizer: Arc::new(Tokenizer::from_str(BERT_TOKENIZER).unwrap()),
             ref_data: None,
             num_layers,
         })
@@ -133,63 +130,30 @@ impl TTSModel {
     ) -> Result<(), GSVError> {
         info!("Processing reference audio and text: {}", ref_text);
         let ref_text = ensure_punctuation(ref_text);
-        let phones = self.text_processor.get_phone(&ref_text)?;
-        let (ref_seq, word2ph): (Vec<i64>, Vec<i32>) =
-            phones
-                .into_iter()
-                .fold((Vec::new(), Vec::new()), |(mut seq, mut w2ph), p| {
-                    seq.extend(p.2);
-                    w2ph.extend(p.1);
-                    (seq, w2ph)
-                });
+        let phones = self.text_processor.get_phone_and_bert(&ref_text)?;
+        let ref_seq: Vec<i64> = phones.iter().fold(Vec::new(), |mut seq, p| {
+            seq.extend(p.1.clone());
+            seq
+        });
+
+        let ref_bert: Vec<Array2<f32>> = phones.iter().map(|f| f.2.clone()).collect();
+
+        //
 
         let ref_seq = Array2::from_shape_vec((1, ref_seq.len()), ref_seq)?;
-        let mut ref_bert = Array2::<f32>::zeros((ref_seq.shape()[1], 1024));
-
-        if let Some(_) = self.bert.as_mut() {
-            ref_bert = self.process_bert(&ref_text, &word2ph)?;
-        }
+        // let mut ref_bert = Array2::<f32>::zeros((ref_seq.shape()[1], 1024));
 
         let (ref_audio_16k, ref_audio_32k) = read_and_resample_audio(&reference_audio_path)?;
         let ssl_content = self.process_ssl(&ref_audio_16k)?;
 
         self.ref_data = Some(ReferenceData {
             ref_seq,
-            ref_bert,
+            ref_bert: ref_bert[0].clone(),
             ref_audio_32k,
             ssl_content,
         });
 
         Ok(())
-    }
-
-    fn process_bert(&mut self, text: &str, word2ph: &[i32]) -> Result<Array2<f32>, GSVError> {
-        let encoding = self.bert_tokenizer.encode(text, true).unwrap();
-        let (input_ids, attention_mask, token_type_ids): (Vec<i64>, Vec<i64>, Vec<i64>) = (
-            encoding.get_ids().iter().map(|&id| id as i64).collect(),
-            encoding
-                .get_attention_mask()
-                .iter()
-                .map(|&m| m as i64)
-                .collect(),
-            encoding.get_type_ids().iter().map(|&t| t as i64).collect(),
-        );
-
-        let inputs = inputs![
-            "input_ids" => Tensor::from_array(Array2::from_shape_vec((1, input_ids.len()), input_ids).unwrap()).unwrap(),
-            "attention_mask" => Tensor::from_array(Array2::from_shape_vec((1, attention_mask.len()), attention_mask).unwrap()).unwrap(),
-            "token_type_ids" => Tensor::from_array(Array2::from_shape_vec((1, token_type_ids.len()), token_type_ids).unwrap()).unwrap()
-        ];
-
-        let bert_out = self.bert.as_mut().unwrap().run(inputs)?;
-        let bert_feature = bert_out["bert_feature"]
-            .try_extract_array::<f32>()?
-            .into_owned();
-        let bert_feature_2d: Array2<f32> = bert_feature.into_dimensionality()?;
-        Ok(build_phone_level_feature(
-            bert_feature_2d,
-            Array1::from_vec(word2ph.to_vec()),
-        ))
     }
 
     fn process_ssl(
@@ -324,7 +288,7 @@ impl TTSModel {
             {
                 let seq_len = y.shape()[1];
                 return Ok(y
-                    .slice_axis(Axis(1), Slice::from(prefix_len + 5..seq_len))
+                    .slice_axis(Axis(1), Slice::from(prefix_len..seq_len))
                     .map(|&i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .insert_axis(Axis(0)));
             }
@@ -354,13 +318,13 @@ impl TTSModel {
         };
         let text = ensure_punctuation(text);
         let time = SystemTime::now();
-        let texts_and_seqs = self.text_processor.get_phone(&text)?;
+        let texts_and_seqs = self.text_processor.get_phone_and_bert(&text)?;
         debug!("g2pw and preprocess time: {:?}", time.elapsed()?);
         let ref_data = ref_data.clone();
 
         let stream = stream! {
-            for (text, word2ph, seq) in texts_and_seqs {
-                match self.in_stream_once_gen(&text, &word2ph, &seq, &ref_data).await {
+            for (text, seq, bert) in texts_and_seqs {
+                match self.in_stream_once_gen(&text, &bert, &seq, &ref_data).await {
                     Ok(samples) => {
                         for sample in samples {
                             yield Ok(sample * 4.0);
@@ -377,17 +341,12 @@ impl TTSModel {
     async fn in_stream_once_gen(
         &mut self,
         text: &str,
-        word2ph: &[i32],
+        text_bert: &Array2<f32>,
         text_seq_vec: &[i64],
         ref_data: &ReferenceData,
     ) -> Result<Vec<f32>, GSVError> {
         let text_seq = Array2::from_shape_vec((1, text_seq_vec.len()), text_seq_vec.to_vec())?;
-        let mut text_bert = Array2::<f32>::zeros((text_seq.shape()[1], 1024));
-        if let Some(_) = self.bert.as_mut() {
-            let time = SystemTime::now();
-            text_bert = self.process_bert(&text, &word2ph)?;
-            debug!("bert time: {:?}", time.elapsed()?);
-        }
+        // let mut text_bert = Array2::<f32>::zeros((text_seq.shape()[1], 1024));
 
         let (x, prompts) = {
             let time = SystemTime::now();
@@ -395,7 +354,7 @@ impl TTSModel {
                 "ref_seq" => TensorRef::from_array_view(&ref_data.ref_seq)?,
                 "text_seq" => TensorRef::from_array_view(&text_seq)?,
                 "ref_bert" => TensorRef::from_array_view(&ref_data.ref_bert)?,
-                "text_bert" => TensorRef::from_array_view(&text_bert)?,
+                "text_bert" => TensorRef::from_array_view(text_bert)?,
                 "ssl_content" => TensorRef::from_array_view(&ref_data.ssl_content)?
             ])?;
             debug!("T2S Encoder time: {:?}", time.elapsed()?);
@@ -510,12 +469,21 @@ fn ensure_punctuation(text: &str) -> String {
 }
 
 fn build_phone_level_feature(res: Array2<f32>, word2ph: Array1<i32>) -> Array2<f32> {
+    debug!("res: {:?}", res);
+    debug!("word2ph: {:?}", word2ph);
     let phone_level_features = word2ph
         .into_iter()
         .enumerate()
         .map(|(i, count)| {
-            let row = res.row(i);
-            Array2::from_shape_fn((count as usize, res.ncols()), |(_j, k)| row[k])
+            if i < res.dim().0 {
+                let row = res.row(i);
+                Array2::from_shape_fn((count as usize, res.ncols()), |(_j, k)| row[k])
+            } else {
+                // use last to force it run
+                Array2::from_shape_fn((count as usize, res.ncols()), |(_j, k)| {
+                    res.row(res.dim().0 - 1)[k]
+                })
+            }
         })
         .collect::<Vec<_>>();
     concatenate(

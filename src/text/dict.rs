@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
+use crate::text::utils::*;
 use lazy_static::lazy_static;
 use std::path::PathBuf;
-
-static DEFAULT_ZH_WORD_DICT: &str = include_str!("../../resource/zh_word_dict.json");
 
 lazy_static! {
     static ref ZN_DICT: HashMap<String, Vec<String>> = {

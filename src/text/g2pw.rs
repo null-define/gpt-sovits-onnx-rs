@@ -3,37 +3,7 @@ use ort::session::{Session};
 use ort::{value::Tensor};
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
-use crate::utils::*;
-
-static MONO_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_mono_chars.json");
-static POLY_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_poly_chars.json");
-static LABELS: &str = include_str!("../../resource/g2pw/dict_poly_index_list.json");
-
-fn load_mono_chars() -> HashMap<char, MonoChar> {
-    if let Ok(dir) = std::env::var("G2PW_DIST_DIR") {
-        let s = std::fs::read_to_string(format!("{}/dict_mono_chars.json", dir))
-            .expect("dict_mono_chars.json not found");
-        serde_json::from_str(&s).expect("dict_mono_chars.json parse error")
-    } else {
-        serde_json::from_str(MONO_CHARS_DIST_STR).unwrap()
-    }
-}
-
-fn load_poly_chars() -> HashMap<char, PolyChar> {
-    if let Ok(dir) = std::env::var("G2PW_DIST_DIR") {
-        let s = std::fs::read_to_string(format!("{}/dict_poly_chars.json", dir))
-            .expect("dict_poly_chars.json not found");
-        serde_json::from_str(&s).expect("dict_poly_chars.json parse error")
-    } else {
-        serde_json::from_str(POLY_CHARS_DIST_STR).unwrap()
-    }
-}
-
-lazy_static::lazy_static! {
-    static ref DICT_MONO_CHARS: HashMap<char, MonoChar> =load_mono_chars();
-    static ref DICT_POLY_CHARS: HashMap<char, PolyChar> = load_poly_chars();
-    static ref POLY_LABLES: Vec<String> = serde_json::from_str(LABELS).unwrap();
-}
+use crate::text::utils::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PolyChar {
@@ -316,15 +286,6 @@ pub struct G2PWConverter {
     tokenizers: Option<Arc<tokenizers::Tokenizer>>,
 }
 
-pub fn str_is_chinese(s: &str) -> bool {
-    let mut r = true;
-    for c in s.chars() {
-        if !DICT_MONO_CHARS.contains_key(&c) && !DICT_POLY_CHARS.contains_key(&c) {
-            r &= false;
-        }
-    }
-    r
-}
 
 impl G2PWConverter {
     pub fn new(session: Session, tokenizer: Arc<tokenizers::Tokenizer>) -> anyhow::Result<Self> {
