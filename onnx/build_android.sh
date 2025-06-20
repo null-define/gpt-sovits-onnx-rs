@@ -38,4 +38,5 @@ cd onnxruntime-1.22.0
     --parallel \
     --use_xnnpack \
     --disable_ml_ops \
+    --use_vcpkg \
     --cmake_extra_defines onnxruntime_ENABLE_CPU_FP16_OPS=ON 

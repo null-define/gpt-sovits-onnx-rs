@@ -6,3 +6,4 @@ onnxruntime-1.22.0/
 *.tar
 *.gz
 MNN*
+.vscode/
