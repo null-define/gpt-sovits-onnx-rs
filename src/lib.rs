@@ -286,6 +286,7 @@ impl TTSModel {
                     || (y.shape()[1] - prefix_len) > EARLY_STOP_NUM
                     || y.last().map_or(false, |&v| v == T2S_DECODER_EOS))
             {
+                debug!("t2s final idx: {}", idx);
                 let seq_len = y.shape()[1];
                 return Ok(y
                     .slice_axis(Axis(1), Slice::from(prefix_len..seq_len))
@@ -466,34 +467,6 @@ fn ensure_punctuation(text: &str) -> String {
     } else {
         text.to_string()
     }
-}
-
-fn build_phone_level_feature(res: Array2<f32>, word2ph: Array1<i32>) -> Array2<f32> {
-    debug!("res: {:?}", res);
-    debug!("word2ph: {:?}", word2ph);
-    let phone_level_features = word2ph
-        .into_iter()
-        .enumerate()
-        .map(|(i, count)| {
-            if i < res.dim().0 {
-                let row = res.row(i);
-                Array2::from_shape_fn((count as usize, res.ncols()), |(_j, k)| row[k])
-            } else {
-                // use last to force it run
-                Array2::from_shape_fn((count as usize, res.ncols()), |(_j, k)| {
-                    res.row(res.dim().0 - 1)[k]
-                })
-            }
-        })
-        .collect::<Vec<_>>();
-    concatenate(
-        Axis(0),
-        &phone_level_features
-            .iter()
-            .map(|x| x.view())
-            .collect::<Vec<_>>(),
-    )
-    .unwrap()
 }
 
 fn read_and_resample_audio<P: AsRef<Path>>(

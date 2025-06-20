@@ -6,13 +6,9 @@ import logging
 import onnx
 from onnx import version_converter
 from onnxsim import simplify
-import onnxruntime
-from onnxoptimizer import (
-    optimize,
-    get_fuse_and_elimination_passes,
-)
-from onnxruntime.transformers import float16
 from onnxruntime.quantization import quantize_dynamic, QuantType
+from onnxoptimizer import optimize, get_fuse_and_elimination_passes
+from onnxconverter_common import float16
 
 # Configure logging
 logging.basicConfig(
@@ -33,74 +29,78 @@ def parse_args():
         default="onnx-patched/kaoyu",
         help="Output directory for optimized models",
     )
+    parser.add_argument(
+        "--no-quant",
+        action="store_true",
+        help="Disable INT8 quantization for applicable models",
+    )
     return parser.parse_args()
 
 
 def validate_environment():
-    try:
-        import onnxruntime
-    except ImportError:
-        logger.error(
-            "onnxruntime is not installed. Install it with 'pip install onnxruntime'"
-        )
-        exit(1)
-    try:
-        import onnxslim
-    except ImportError:
-        logger.error(
-            "onnxslim is not installed. Install it with 'pip install onnxslim'"
-        )
-        exit(1)
+    """Validate required dependencies."""
+    for module, install_name in [
+        ("onnxruntime", "onnxruntime"),
+        ("onnxslim", "onnxslim"),
+    ]:
+        try:
+            __import__(module)
+        except ImportError:
+            logger.error(
+                f"{install_name} is not installed. Install it with 'pip install {install_name}'"
+            )
+            exit(1)
 
 
-def process_model(file_path, output_path):
+def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str:
+    """Process and optimize an ONNX model."""
     logger.info(f"Processing model: {file_path}")
     model = onnx.load(file_path)
-    if not "bert" in output_path.lower():
+    output_lower = output_path.lower()
+
+    # Simplify non-BERT models
+    if "bert" not in output_lower:
         model, _ = simplify(model, include_subgraph=True)
         logger.info(f"ONNX simplification done for: {output_path}")
     else:
-        # bert model use transformers optimizer
+        # BERT model optimization
         from onnxruntime.transformers import optimizer
+
         model = version_converter.convert_version(model, 21)
         optimized_model = optimizer.optimize_model(
-            model, model_type="bert", num_heads=16, hidden_size=1024
+            model,
+            model_type="bert",
+            num_heads=16,
+            hidden_size=1024,
+            only_onnxruntime=True,
         )
-        optimized_model.convert_float_to_float16()
-        optimized_model.save_model_to_file(output_path)
+        if use_int8_quant:
+            quantize_dynamic(optimized_model.model, output_path)
+            logger.info(f"INT8 quantization done for: {output_path}")
+        else:
+            onnx.save(optimized_model.model, output_path)
         return output_path
-    # optimize for all
-    model = optimize(
-        model=model,
-        passes=get_fuse_and_elimination_passes(),
-    )
+
+    # General optimizations
+    model = optimize(model, passes=get_fuse_and_elimination_passes())
     logger.info(f"ONNX optimization done for: {output_path}")
-    # slim for all
+
+    # Slim optimization
     from onnxslim import slim
 
     model = slim(model)
     logger.info(f"ONNX slim optimization done for: {output_path}")
+
+    # Opset conversion
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
-    # convert to fp6 with these 2 models because they are huge
-    if "g2p" in file_path.lower() or "ssl" in file_path.lower():
-        model = float16.convert_float_to_float16(model, keep_io_types=True)
-        logger.info(f"FP16 conversion done for: {output_path}")
-    onnx.save(model, output_path)  # Ensure model is saved
 
-    # quant decoder to int8 if you want, this may hurt emotion performance
-    # if "decoder" in output_path.lower():
-    #     model = quantize_dynamic(model, output_path)
-    #     logger.info(f"INT8 quant done for: {output_path}")
-
-    # use ort on-device optimizer to get better performance
-    # import onnxruntime as rt
-    # sess_options = rt.SessionOptions()
-    # # Set graph optimization level
-    # sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-    # # To enable model serialization after graph optimization set this
-    # sess_options.optimized_model_filepath = output_path
-    # session = rt.InferenceSession(output_path, sess_options)
+    # INT8 quantization for specific models, do not quant for vits or ssl
+    if use_int8_quant and ("g2p" in file_path.lower() or "decoder" in output_lower):
+        quantize_dynamic(model, output_path, per_channel=True)
+        logger.info(f"INT8 quantization done for: {output_path}")
+    else:
+        onnx.save(model, output_path)
 
     return output_path
 
@@ -119,18 +119,18 @@ def main():
         exit(1)
 
     # Validate required models
-    if not any("decoder" in f.lower() for f in onnx_files):
-        logger.error("No decoder model found in the folder")
-        exit(1)
-    if not any("vits" in f.lower() for f in onnx_files):
-        logger.error("No vits model found in the folder")
+    has_decoder = any("decoder" in f.lower() for f in onnx_files)
+    has_vits = any("vits" in f.lower() for f in onnx_files)
+    if not has_decoder or not has_vits:
+        logger.error(
+            f"{'No decoder model found' if not has_decoder else ''}{' and ' if not has_decoder and not has_vits else ''}{'No vits model found' if not has_vits else ''} in the folder"
+        )
         exit(1)
 
     # Process each model
     for file_path in onnx_files:
-        filename = os.path.basename(file_path)
-        output_path = os.path.join(args.output_dir, filename)
-        final_path = process_model(file_path, output_path)
+        output_path = os.path.join(args.output_dir, os.path.basename(file_path))
+        final_path = process_model(file_path, output_path, not args.no_quant)
         logger.info(f"Optimization complete for: {final_path}")
 
     logger.info("All models processed successfully!")
