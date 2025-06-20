@@ -297,7 +297,7 @@ impl TTSModel {
         }
     }
 
-    pub async fn run(
+    pub async fn synthesize(
         &mut self,
         text: &str,
     ) -> Result<
@@ -448,9 +448,9 @@ impl TTSModel {
             .into_raw_vec())
     }
 
-    pub fn run_sync(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
+    pub fn synthesize_sync(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
         Self::run_async_in_context(async {
-            let (spec, stream) = self.run(text).await?;
+            let (spec, stream) = self.synthesize(text).await?;
             let mut samples = Vec::new();
             futures::pin_mut!(stream);
             while let Some(sample) = stream.next().await {

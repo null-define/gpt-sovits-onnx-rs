@@ -221,7 +221,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInfere
         }
     };
 
-    match model.run_sync(&text) {
+    match model.synthesize_sync(&text) {
         Ok((_, samples_vec)) => {
             // Fix deprecated into_raw_vec
             let float_array = match env.new_float_array(samples_vec.len() as i32) {

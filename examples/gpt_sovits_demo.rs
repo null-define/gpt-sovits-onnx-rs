@@ -93,7 +93,7 @@ async fn run_async_inference(
     let mut times = Vec::with_capacity(runs);
     for i in 0..runs {
         let start = Instant::now();
-        let (spec, stream) = model.run(text).await?;
+        let (spec, stream) = model.synthesize(text).await?;
         let mut writer = if i == runs - 1 {
             Some(WavWriter::create(output_file, spec)?)
         } else {
@@ -122,7 +122,7 @@ fn run_sync_inference(
     let mut times = Vec::with_capacity(runs);
     for i in 0..runs {
         let start = Instant::now();
-        let (spec, samples) = model.run_sync(text)?;
+        let (spec, samples) = model.synthesize_sync(text)?;
         if i == runs - 1 {
             write_wav(spec, &samples, output_file)?;
         }
