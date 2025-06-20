@@ -24,7 +24,7 @@ fn calculate_stats(times: &[f64]) -> (f64, f64, f64, f64) {
 
 fn main() -> Result<(), GSVError> {
     env_logger::init();
-    let assets_dir = Path::new("/home/qiang/projects/GPT-SoVITS/onnx-patched/kaoyu");
+    let assets_dir = Path::new("./onnx-model-patched/kaoyu");
 
     // Initialize model once
     let mut model = TTSModel::new(

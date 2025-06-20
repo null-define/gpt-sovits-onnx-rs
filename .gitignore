@@ -7,3 +7,4 @@ onnxruntime-1.22.0/
 *.gz
 MNN*
 .vscode/
+*.onnx

@@ -30,7 +30,7 @@ bash build_android.sh
 
 cd ..
 
-export ORT_LIB_LOCATION=$PWD/onnx/onnxruntime-1.22.0/build/Android/Release
+export ORT_LIB_LOCATION=$PWD/onnx/onnxruntime-1.22.0/build/Android/MinSizeRel
 export ORT_INCLUDE_DIR==$PWD/onnx/onnxruntime-1.22.0/include
 
 export TARGET=aarch64-linux-android

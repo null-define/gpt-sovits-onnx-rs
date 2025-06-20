@@ -31,7 +31,7 @@ fn init_logging() {
 pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel(
     mut env: JNIEnv,
     _class: JClass,
-    g2pW_path: JString,
+    g2p_w_path: JString,
     vits_path: JString,
     ssl_path: JString,
     t2s_encoder_path: JString,
@@ -42,7 +42,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
 ) -> jlong {
     init_logging();
     // Convert JString to Rust String with error handling
-    let g2pW: String = match env.get_string(&g2pW_path) {
+    let g2p_w: String = match env.get_string(&g2p_w_path) {
         Ok(s) => s.into(),
         Err(e) => {
             env.throw_new(
@@ -114,13 +114,12 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
         Err(e) => {
             env.throw_new(
                 "java/lang/IllegalArgumentException",
-                format!("Couldn't get t2s s decoder path: {}", e),
+                format!("Couldn't get bert path: {}", e),
             )
             .expect("Failed to throw exception");
             return 0;
         }
     };
-
 
     // Convert max_length from jlong to usize
     let max_length_usize = match max_length.try_into() {
@@ -136,14 +135,14 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     };
 
     match TTSModel::new(
-        Path::new(&g2pW),
+        Path::new(&g2p_w),
         Path::new(&vits),
         Path::new(&ssl),
         Path::new(&t2s_encoder),
         Path::new(&t2s_fs_decoder),
         Path::new(&t2s_s_decoder),
         max_length_usize,
-         Some(Path::new(&bert)),
+        Some(Path::new(&bert)),
     ) {
         Ok(model) => Box::into_raw(Box::new(model)) as jlong,
         Err(e) => {
