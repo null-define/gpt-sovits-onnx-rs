@@ -21,12 +21,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Optimize ONNX models.")
     parser.add_argument(
         "--input-dir",
-        default="onnx/kaoyu",
+        default="onnx/custom",
         help="Input directory containing ONNX files",
     )
     parser.add_argument(
         "--output-dir",
-        default="onnx-patched/kaoyu",
+        default="onnx-patched/custom",
         help="Output directory for optimized models",
     )
     parser.add_argument(

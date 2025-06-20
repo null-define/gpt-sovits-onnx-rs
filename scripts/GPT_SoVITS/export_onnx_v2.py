@@ -9,6 +9,7 @@ import json
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 from module.models_onnx import SynthesizerTrn, symbols_v1, symbols_v2
 from AR.models.t2s_lightning_module_onnx import Text2SemanticLightningModule
+import argparse
 
 def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False):
     hann_window = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
@@ -311,7 +312,7 @@ def export_bert(project_name):
             ref_bert_inputs["attention_mask"],
             ref_bert_inputs["token_type_ids"],
         ),
-        f"onnx/{project_name}/{project_name}_bert.onnx",
+        f"onnx/{project_name}/bert.onnx",
         input_names=["input_ids", "attention_mask", "token_type_ids"],
         output_names=["bert_feature"],
         dynamic_axes={
@@ -348,7 +349,7 @@ def export(vits_path, gpt_path, project_name, vits_model="v2"):
     torch.onnx.export(
         ssl,
         ref_audio_16k,
-        f"onnx/{project_name}/{project_name}_ssl.onnx",
+        f"onnx/{project_name}/ssl.onnx",
         input_names=["ref_audio_16k"],
         output_names=["ssl_content"],
         dynamic_axes={
@@ -385,16 +386,18 @@ def export(vits_path, gpt_path, project_name, vits_model="v2"):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Export model to ONNX")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the model directory")
+    parser.add_argument("--export_name", type=str, required=True, help="Project Name for the exported model")
+    args = parser.parse_args()
+
     try:
         os.mkdir("onnx")
     except:
         pass
-
-    base_path = "/home/qiang/models/gpt-sovits-simple/"
-    gpt_path = base_path + "kaoyu_v2/kaoyu_gpt.ckpt"
-    vits_path = base_path + "kaoyu_v2/kaoyu_sovits.pth"
-    exp_path = "kaoyu"
+    gpt_path = os.path.join(args.model_path, "gpt.ckpt")
+    vits_path = os.path.join(args.model_path, "sovits.pth")
     with torch.no_grad():
-        export(vits_path, gpt_path, exp_path)
+        export(vits_path, gpt_path, args.export_name)
 
     # soundfile.write("out.wav", a, vits.hps.data.sampling_rate)
