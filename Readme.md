@@ -17,9 +17,17 @@
 源代码：[gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master)
 演示机为IQOO13，推理时间因不同SOC和机型可能差距较大。目前英文效果较差，且仍存在偶现输出提前停止。
 
+https://github.com/user-attachments/assets/369cefb6-3dab-4db4-9bb1-647f526f27d0
 
-https://github.com/user-attachments/assets/41260271-2af5-4fbc-af5f-1dad7f48aec9
+## 模型下载
 
+如果不想自己训练+导出模型，可以使用这个模型：
+
+https://huggingface.co/mikv39/gpt-sovits-onnx-custom
+
+在[gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master) 中可以直接载入并使用。
+
+注意：该模型使用了具有版权归属的音频/视频进行微调，所以请不要作为商业用途。
 
 
 ## 当前问题
