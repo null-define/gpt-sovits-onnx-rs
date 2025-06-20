@@ -1,35 +1,26 @@
-use async_stream::stream;
-use futures::{StreamExt, stream::Stream};
+// src/lib.rs
 use hound::{WavReader, WavSpec};
 use jieba_rs::Jieba;
-use log::{debug, error, info};
-use ndarray::{Array, ArrayBase, Axis, Dim, IxDyn, IxDynImpl, OwnedRepr, Slice, ViewRepr, s};
-use ort::session::{Session, builder::GraphOptimizationLevel};
-use ort::value::{TensorRef, Value};
-use ort::{
-    execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
-    inputs,
-};
-use std::num::NonZero;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::{fs::File, path::Path, time::SystemTime};
-use tokio::task::block_in_place;
+use log::{debug, info};
+use ndarray::{Array, Dim, IxDyn};
+// use ort::{
+//     execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
+//     session::{Session, builder::GraphOptimizationLevel},
+// };
+use std::{fs::File, sync::Arc};
+use std::path::Path;
+use std::{num::NonZero, str::FromStr};
 
 mod error;
+mod mnn_ffi;
 mod text;
 mod utils;
 
+use crate::mnn_ffi::MNNModelWrapper;
 use crate::text::TextProcessor;
 use crate::text::g2pw::G2PWConverter;
 pub use error::GSVError;
 
-const EARLY_STOP_NUM: usize = 1500; // Match old code's max iteration limit
-const T2S_DECODER_EOS: usize = 1024; // Assuming EOS token remains consistent
-
-type InternalDType = f32; // Verify with model specs; f16 may be needed if model expects it
-
-// Struct to hold reference data
 #[derive(Clone)]
 pub struct ReferenceData {
     ref_seq: Array<i64, Dim<[usize; 2]>>,
@@ -38,16 +29,10 @@ pub struct ReferenceData {
     ssl_content: Array<f32, IxDyn>,
 }
 
-// Struct to hold model sessions and reference data
 pub struct TTSModel {
     text_processor: TextProcessor,
-    sovits: Session,
-    ssl: Session,
-    t2s_encoder: Session,
-    t2s_fs_decoder: Session,
-    t2s_s_decoder: Session,
+    mnn_model: MNNModelWrapper,
     ref_data: Option<ReferenceData>,
-    num_layers: usize,
 }
 
 impl TTSModel {
@@ -60,78 +45,40 @@ impl TTSModel {
         t2s_s_decoder_path: P,
         num_layers: usize,
     ) -> Result<Self, GSVError> {
-        info!("Initializing TTSModel with ONNX sessions");
-        // let cpu_session_config = || {
-        //     Session::builder()?
-        //         .with_execution_providers([CPUExecutionProvider::default()
-        //             .with_arena_allocator(true)
-        //             .build()])?
-        //         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        //         .with_intra_threads(8)
-        // };
+        info!("Initializing TTSModel with MNN sessions");
 
-        let cpu_session2_config = || {
-            Session::builder()?
-                .with_execution_providers([CPUExecutionProvider::default()
-                    .with_arena_allocator(true)
-                    .build()])?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(4)?
-                .with_inter_threads(2)
-        };
-
-        let xnnpack_session_config = || {
-            Session::builder()?
-                .with_execution_providers([XNNPACKExecutionProvider::default()
-                    .with_intra_op_num_threads(NonZero::new(8).unwrap())
-                    .build()])?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-        };
-        let sovits = xnnpack_session_config()?.commit_from_file(sovits_path)?;
-        let ssl = xnnpack_session_config()?.commit_from_file(ssl_path)?;
-        let t2s_encoder = cpu_session2_config()?.commit_from_file(t2s_encoder_path)?;
-        let t2s_fs_decoder = cpu_session2_config()?.commit_from_file(t2s_fs_decoder_path)?;
-        let t2s_s_decoder = cpu_session2_config()?
-            // .with_profiling("d2s")?
-            .commit_from_file(t2s_s_decoder_path)?;
-
-        let g2pw_session = xnnpack_session_config()?.commit_from_file(g2pw_path)?;
+        // let g2pw_session = Session::builder()?
+        //     .with_execution_providers([XNNPACKExecutionProvider::default()
+        //         .with_intra_op_num_threads(NonZero::new(8).unwrap())
+        //         .build()])?
+        //     .with_optimization_level(GraphOptimizationLevel::Level3)?
+        //     .commit_from_file(g2pw_path)?;
 
         let tokenizer =
             Arc::new(tokenizers::Tokenizer::from_str(text::g2pw::G2PW_TOKENIZER).unwrap());
-
         let text_processor = TextProcessor {
             jieba: Jieba::new(),
-            g2pw: G2PWConverter::new(g2pw_session, tokenizer).unwrap(),
+            g2pw: G2PWConverter::new().unwrap(),
             symbols: text::symbols::SYMBOLS.clone(),
         };
 
+        let mnn_model = MNNModelWrapper::new(
+            sovits_path.as_ref().to_str().unwrap(),
+            ssl_path.as_ref().to_str().unwrap(),
+            t2s_encoder_path.as_ref().to_str().unwrap(),
+            t2s_fs_decoder_path.as_ref().to_str().unwrap(),
+            t2s_s_decoder_path.as_ref().to_str().unwrap(),
+            num_layers,
+        )?;
+
         Ok(TTSModel {
             text_processor,
-            sovits,
-            ssl,
-            t2s_encoder,
-            t2s_fs_decoder,
-            t2s_s_decoder,
+            mnn_model,
             ref_data: None,
-            num_layers,
         })
     }
 
-    fn run_async_in_context<F, T>(fut: F) -> Result<T, GSVError>
-    where
-        F: std::future::Future<Output = Result<T, GSVError>>,
-    {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => block_in_place(|| handle.block_on(fut)),
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(fut)
-            }
-        }
-    }
-
-    pub async fn process_reference<P: AsRef<Path>>(
+    pub fn process_reference<P: AsRef<Path>>(
         &mut self,
         reference_audio_path: P,
         ref_text: &str,
@@ -144,12 +91,10 @@ impl TTSModel {
         };
         let ref_seq = self.text_processor.get_phone(&ref_text)?.concat();
         debug!("Reference phoneme: {:?}", ref_seq);
-        let ref_seq = Array::from_shape_vec((1, ref_seq.len()), ref_seq)
-            .map_err(|e| GSVError::from(format!("Failed to create ref_seq array: {}", e)))?;
+        let ref_seq = Array::from_shape_vec((1, ref_seq.len()), ref_seq)?;
         let ref_bert = Array::<f32, _>::zeros((ref_seq.shape()[1], 1024));
 
-        let file = File::open(&reference_audio_path)
-            .map_err(|e| GSVError::from(format!("Failed to open reference audio: {}", e)))?;
+        let file = File::open(&reference_audio_path)?;
         let wav_reader = WavReader::new(file)?;
         let spec = wav_reader.spec();
         let audio_samples: Vec<f32> = wav_reader
@@ -164,21 +109,13 @@ impl TTSModel {
         } else {
             audio_samples.clone()
         };
-        let ref_audio_16k = Array::from_shape_vec((1, ref_audio_16k.len()), ref_audio_16k)
-            .map_err(|e| GSVError::from(format!("Failed to create ref_audio_16k array: {}", e)))?;
+        let ref_audio_16k = Array::from_shape_vec((1, ref_audio_16k.len()), ref_audio_16k)?;
 
         let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
-        let ref_audio_32k = Array::from_shape_vec((1, ref_audio_32k.len()), ref_audio_32k)
-            .map_err(|e| GSVError::from(format!("Failed to create ref_audio_32k array: {}", e)))?;
+        let ref_audio_32k = Array::from_shape_vec((1, ref_audio_32k.len()), ref_audio_32k)?;
 
-        let time = SystemTime::now();
-        let ssl_output = self
-            .ssl
-            .run(ort::inputs!["ref_audio_16k" => TensorRef::from_array_view(&ref_audio_16k)?])?;
-        info!("SSL processing time: {:?}", time.elapsed()?);
-        let ssl_content = ssl_output["ssl_content"]
-            .try_extract_array::<f32>()?
-            .into_owned();
+        let ssl_content_vec = self.mnn_model.run_ssl(ref_audio_16k.as_slice().unwrap())?;
+        let ssl_content = Array::from_shape_vec(vec![1, 768, ssl_content_vec.len()/768 ], ssl_content_vec)?;
 
         self.ref_data = Some(ReferenceData {
             ref_seq,
@@ -190,100 +127,7 @@ impl TTSModel {
         Ok(())
     }
 
-    pub fn process_reference_sync<P: AsRef<Path>>(
-        &mut self,
-        reference_audio_path: P,
-        ref_text: &str,
-    ) -> Result<(), GSVError> {
-        Self::run_async_in_context(self.process_reference(reference_audio_path, ref_text))
-    }
-
-    fn run_t2s_s_decoder_loop(
-        &mut self,
-        mut y: Array<i64, Dim<IxDynImpl>>,
-        mut y_emb: Array<InternalDType, IxDyn>,
-        x_example: Array<InternalDType, IxDyn>,
-        mut k_caches_arr: Vec<Array<InternalDType, IxDyn>>,
-        mut v_caches_arr: Vec<Array<InternalDType, IxDyn>>,
-        prefix_len: usize,
-    ) -> Result<ArrayBase<OwnedRepr<i64>, Dim<IxDynImpl>>, GSVError> {
-        let x_example_val = Value::from_array(x_example)?;
-        let mut idx = 1;
-        loop {
-            let time = SystemTime::now();
-            let mut s_decoder_inputs = ort::inputs![
-                "iy" => TensorRef::from_array_view(&y)?,
-                "iy_emb" => TensorRef::from_array_view(&y_emb)?,
-                "x_example" => x_example_val.clone(),
-            ];
-            for i in 0..self.num_layers {
-                s_decoder_inputs.push((
-                    format!("ik_cache_{}", i).into(),
-                    TensorRef::from_array_view(&k_caches_arr[i])?.into(),
-                ));
-                s_decoder_inputs.push((
-                    format!("iv_cache_{}", i).into(),
-                    TensorRef::from_array_view(&v_caches_arr[i])?.into(),
-                ));
-            }
-            let s_decoder_output = self.t2s_s_decoder.run(s_decoder_inputs)?;
-            debug!(
-                "T2S S Decoder iteration {} time: {:?}",
-                idx,
-                time.elapsed()?
-            );
-
-            y = s_decoder_output["y"]
-                .try_extract_array::<i64>()?
-                .into_owned();
-            y_emb = s_decoder_output["y_emb"]
-                .try_extract_array::<InternalDType>()?
-                .into_owned();
-
-            for i in 0..self.num_layers {
-                k_caches_arr[i] = s_decoder_output[format!("k_cache_{}", i)]
-                    .try_extract_array::<InternalDType>()?
-                    .into_owned();
-                v_caches_arr[i] = s_decoder_output[format!("v_cache_{}", i)]
-                    .try_extract_array::<InternalDType>()?
-                    .into_owned();
-            }
-
-            debug!("S Decoder iteration {}: y shape = {:?}", idx, y.shape());
-
-            if idx > 10
-                && (idx >= 1500
-                    || (y.shape()[1] - prefix_len) > EARLY_STOP_NUM
-                    || y.last().unwrap_or(&(T2S_DECODER_EOS as i64)) == &(T2S_DECODER_EOS as i64))
-            {
-                let seq_len = y.shape()[1];
-                let pred_semantic = y
-                    .slice_axis(Axis(1), Slice::from(prefix_len + 1..seq_len))
-                    .into_owned()
-                    .map(|i| {
-                        if *i == (T2S_DECODER_EOS as i64) {
-                            0
-                        } else {
-                            *i
-                        }
-                    });
-                return Ok(pred_semantic.insert_axis(Axis(0)));
-            }
-
-            idx += 1;
-        }
-    }
-
-    pub async fn run(
-        &mut self,
-        text: &str,
-    ) -> Result<
-        (
-            WavSpec,
-            impl Stream<Item = Result<f32, GSVError>> + Send + Unpin,
-        ),
-        GSVError,
-    > {
+    pub fn run(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
         info!("Running inference for text: {}", text);
         let ref_data = self
             .ref_data
@@ -304,138 +148,23 @@ impl TTSModel {
         };
         let text_seqs = self.text_processor.get_phone(&text)?;
 
-        let ref_data = ref_data.clone();
+        let mut samples = Vec::new();
+        for text_seq_vec in text_seqs {
+            let text_seq = Array::from_shape_vec((1, text_seq_vec.len()), text_seq_vec)?;
+            let text_bert = Array::<f32, _>::zeros((text_seq.shape()[1], 1024));
 
-        let stream = stream! {
-            for text_seq_vec in text_seqs {
-                match self.in_stream_once_gen(&text_seq_vec, &ref_data).await {
-                    Ok(samples) => {
-                        debug!("Yielding {} samples for normalized text", samples.len());
-                        for sample in samples {
-                            yield Ok(sample * 4.0);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error in in_stream_once_gen: {}", e);
-                        yield Err(e);
-                    }
-                }
-            }
-        };
-
-        Ok((spec, Box::pin(stream)))
-    }
-
-    async fn in_stream_once_gen(
-        &mut self,
-        text_seq_vec: &Vec<i64>,
-        ref_data: &ReferenceData,
-    ) -> Result<Vec<f32>, GSVError> {
-        debug!("Text phoneme: {:?}", text_seq_vec);
-        let num_layers = self.num_layers;
-
-        let text_seq = Array::from_shape_vec((1, text_seq_vec.len()), text_seq_vec.to_vec())
-            .map_err(|e| GSVError::from(format!("Failed to create text_seq array: {}", e)))?;
-        let text_bert = Array::<f32, _>::zeros((text_seq.shape()[1], 1024));
-
-        let time = SystemTime::now();
-        let x_owned: ArrayBase<OwnedRepr<f32>, Dim<IxDynImpl>>;
-        let prompts_owned: ArrayBase<OwnedRepr<i64>, Dim<IxDynImpl>>;
-        {
-            let encoder_output = self.t2s_encoder.run(ort::inputs![
-                "ref_seq" => TensorRef::from_array_view(&ref_data.ref_seq)?,
-                "text_seq" => TensorRef::from_array_view(&text_seq)?,
-                "ref_bert" => TensorRef::from_array_view(&ref_data.ref_bert)?,
-                "text_bert" => TensorRef::from_array_view(&text_bert)?,
-                "ssl_content" => TensorRef::from_array_view(&ref_data.ssl_content)?
-            ])?;
-            info!("T2S Encoder time: {:?}", time.elapsed()?);
-            x_owned = encoder_output["x"].try_extract_array::<f32>()?.into_owned();
-            prompts_owned = encoder_output["prompts"]
-                .try_extract_array::<i64>()?
-                .into_owned();
+            let output_vec = self.mnn_model.run_inference(
+                ref_data.ref_seq.as_slice().unwrap(),
+                ref_data.ref_bert.as_slice().unwrap(),
+                text_seq.as_slice().unwrap(),
+                text_bert.as_slice().unwrap(),
+                ref_data.ssl_content.as_slice().unwrap(),
+                ref_data.ref_audio_32k.as_slice().unwrap(),
+            )?;
+            samples.extend(output_vec.into_iter().map(|s| s * 4.0));
         }
 
-        let prefix_len = prompts_owned.dim()[1];
-
-        let time = SystemTime::now();
-        let (y, y_emb, x_example, initial_k_caches_arr, initial_v_caches_arr) = {
-            let fs_decoder_inputs = ort::inputs![
-                "x" => TensorRef::from_array_view(&x_owned)?,
-                "prompts" => TensorRef::from_array_view(&prompts_owned)?
-            ];
-            let fs_decoder_output = self.t2s_fs_decoder.run(fs_decoder_inputs)?;
-            info!("T2S FS Decoder time: {:?}", time.elapsed()?);
-
-            let y = fs_decoder_output["y"]
-                .try_extract_array::<i64>()?
-                .into_owned();
-            let y_emb = fs_decoder_output["y_emb"]
-                .try_extract_array::<InternalDType>()?
-                .into_owned();
-            let x_example = fs_decoder_output["x_example"]
-                .try_extract_array::<InternalDType>()?
-                .into_owned();
-
-            let initial_k_caches_arr: Vec<Array<InternalDType, IxDyn>> = (0..num_layers)
-                .map(|i| {
-                    fs_decoder_output[format!("k_cache_{}", i)]
-                        .try_extract_array::<InternalDType>()
-                        .map(|arr| arr.into_owned())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let initial_v_caches_arr: Vec<Array<InternalDType, IxDyn>> = (0..num_layers)
-                .map(|i| {
-                    fs_decoder_output[format!("v_cache_{}", i)]
-                        .try_extract_array::<InternalDType>()
-                        .map(|arr| arr.into_owned())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            (
-                y,
-                y_emb,
-                x_example,
-                initial_k_caches_arr,
-                initial_v_caches_arr,
-            )
-        };
-        let time = SystemTime::now();
-        let pred_semantic = self.run_t2s_s_decoder_loop(
-            y,
-            y_emb,
-            x_example,
-            initial_k_caches_arr,
-            initial_v_caches_arr,
-            prefix_len,
-        )?;
-
-        info!(
-            "T2S S Decoder loop finished. time cost {:?}",
-            time.elapsed()?
-        );
-
-        let time = SystemTime::now();
-        let outputs = self.sovits.run(ort::inputs![
-            "text_seq" => TensorRef::from_array_view(&text_seq)?,
-            "pred_semantic" => TensorRef::from_array_view(&pred_semantic)?,
-            "ref_audio" => TensorRef::from_array_view(&ref_data.ref_audio_32k)?
-        ])?;
-        let output = outputs["audio"].try_extract_array::<f32>()?;
-        info!("SoVITS time: {:?}", time.elapsed()?);
-        let samples = output.into_owned().into_raw_vec();
-        Ok(samples)
-    }
-
-    pub fn run_sync(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
-        Self::run_async_in_context(async {
-            let (spec, stream) = self.run(text).await?;
-            let mut samples = Vec::new();
-            futures::pin_mut!(stream);
-            while let Some(sample) = stream.next().await {
-                samples.push(sample?);
-            }
-            Ok((spec, samples))
-        })
+        Ok((spec, samples))
     }
 }
 

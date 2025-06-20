@@ -1,6 +1,5 @@
 use hound::Error as HoundError;
 use ndarray::ShapeError;
-use ort::Error as OrtError;
 use std::{
     error::Error,
     fmt::{Display, Formatter, Result as FmtResult},
@@ -10,7 +9,6 @@ use std::{
 #[derive(Debug)]
 pub enum GSVError {
     Io(IoError),
-    Ort(OrtError),
     Shape(ShapeError),
     SystemTime(SystemTimeError),
     Hound(HoundError),
@@ -25,7 +23,6 @@ impl Display for GSVError {
         write!(f, "GSVError: ")?;
         match self {
             Self::Io(e) => Display::fmt(e, f),
-            Self::Ort(e) => Display::fmt(e, f),
             Self::Shape(e) => Display::fmt(e, f),
             Self::SystemTime(e) => Display::fmt(e, f),
             Self::Hound(e) => Display::fmt(e, f),
@@ -35,11 +32,6 @@ impl Display for GSVError {
     }
 }
 
-impl From<OrtError> for GSVError {
-    fn from(value: OrtError) -> Self {
-        Self::Ort(value)
-    }
-}
 
 impl From<IoError> for GSVError {
     fn from(value: IoError) -> Self {
@@ -79,5 +71,11 @@ impl From<String> for GSVError {
 impl From<&str> for GSVError {
     fn from(value: &str) -> Self {
         Self::Common(value.into())
+    }
+}
+
+impl From<std::ffi::NulError> for GSVError {
+    fn from(err: std::ffi::NulError) -> Self {
+        Self::Common(err.to_string())
     }
 }
