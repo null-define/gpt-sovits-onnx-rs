@@ -16,14 +16,22 @@ use std::{fs::File, path::Path, str::FromStr};
 use tokenizers::Tokenizer;
 use tokio::task::block_in_place;
 
+mod audio_filter;
 mod error;
 mod text;
 
-use crate::text::{TextProcessor, bert::BertModel, g2pw::G2PWConverter};
+use crate::{
+    audio_filter::{
+        AudioFilterPluginSystem, EqualizerPass, HighPassPass, NoiseReductionPass, ReverbPass,
+    },
+    text::{TextProcessor, bert::BertModel, g2pw::G2PWConverter},
+};
 pub use error::GSVError;
 
 const EARLY_STOP_NUM: usize = 1500;
 const T2S_DECODER_EOS: i64 = 1024;
+const CUT_LEN: usize = 32;
+
 type KvDType = f32;
 
 static BERT_TOKENIZER: &str = include_str!("../resource/g2pw_tokenizer.json");
@@ -45,6 +53,8 @@ pub struct TTSModel {
     t2s_s_decoder: Session,
     ref_data: Option<ReferenceData>,
     num_layers: usize,
+    audio_filter: AudioFilterPluginSystem,
+    output_spec: WavSpec,
 }
 
 // --- KV Cache Configuration ---
@@ -87,6 +97,25 @@ impl TTSModel {
         //         .commit_from_file(path)
         // };
 
+        let output_spec = WavSpec {
+            channels: 1,
+            sample_rate: 32000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+
+        let mut audio_filter = AudioFilterPluginSystem::new(output_spec);
+
+        let equalizer_pass = Box::new(EqualizerPass::new(output_spec.sample_rate, 512));
+        audio_filter.add_pass(equalizer_pass);
+
+        // Add high-pass pass
+        let high_pass = Box::new(HighPassPass::new(output_spec.sample_rate, 128.0));
+        audio_filter.add_pass(high_pass);
+
+        let noise_reduction = Box::new(NoiseReductionPass::new(output_spec.sample_rate, 512));
+        audio_filter.add_pass(noise_reduction);
+
         Ok(TTSModel {
             text_processor: TextProcessor::new(
                 Jieba::new(),
@@ -107,6 +136,8 @@ impl TTSModel {
             t2s_s_decoder: create_session(t2s_s_decoder_path)?,
             ref_data: None,
             num_layers,
+            audio_filter,
+            output_spec,
         })
     }
 
@@ -311,12 +342,7 @@ impl TTSModel {
             .ref_data
             .as_ref()
             .ok_or(GSVError::from("Reference data not initialized"))?;
-        let spec = WavSpec {
-            channels: 1,
-            sample_rate: 32000,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
+        let spec = self.output_spec;
         let text = ensure_punctuation(text);
         let time = SystemTime::now();
         let texts_and_seqs = self.text_processor.get_phone_and_bert(&text)?;
@@ -328,7 +354,7 @@ impl TTSModel {
                 match self.in_stream_once_gen(&text, &bert, &seq, &ref_data).await {
                     Ok(samples) => {
                         for sample in samples {
-                            yield Ok(sample * 4.0);
+                            yield Ok(sample);
                         }
                     }
                     Err(e) => yield Err(e),
@@ -442,10 +468,19 @@ impl TTSModel {
             "ref_audio" => TensorRef::from_array_view(&ref_data.ref_audio_32k)?
         ])?;
         debug!("SoVITS time: {:?}", time.elapsed()?);
-        Ok(outputs["audio"]
-            .try_extract_array::<f32>()?
+        let output_audio = outputs["audio"].try_extract_array::<f32>()?;
+        let mut audio = output_audio
+            .slice(s![CUT_LEN..output_audio.shape()[0] - CUT_LEN])
             .into_owned()
-            .into_raw_vec())
+            .into_raw_vec();
+
+        for sample in &mut audio {
+            *sample = *sample * 4.0;
+        }
+
+        self.audio_filter.process_buffer(&mut audio);
+
+        Ok(audio)
     }
 
     pub fn synthesize_sync(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
