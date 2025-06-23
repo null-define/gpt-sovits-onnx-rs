@@ -24,17 +24,41 @@ if [ ! -d "$ANDROID_SDK_HOME" ]; then
     exit 1
 fi
 
-cd onnx
-bash download_onnx.sh
-bash build_android.sh
+mkdir -p onnx_build
+
+cd onnx_build
+
+# download
+if [ ! -f "./v1.22.0.tar.gz" ]; then
+    wget https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.22.0.tar.gz
+fi
+
+if [ ! -d "./onnxruntime-1.22.0" ]; then
+    tar -xzf v1.22.0.tar.gz
+fi
+
+# build
+cd onnxruntime-1.22.0
+./build.sh --android \
+    --android_ndk_path $ANDROID_NDK_HOME \
+    --android_sdk_path $ANDROID_SDK_HOME \
+    --config MinSizeRel \
+    --android_api 32 \
+    --android_abi arm64-v8a \
+    --build_shared_lib \
+    --skip_tests \
+    --parallel \
+    --use_xnnpack \
+    --disable_ml_ops \
+    --use_vcpkg \
+    --cmake_extra_defines onnxruntime_ENABLE_CPU_FP16_OPS=ON 
 
 cd ..
 
-export ORT_LIB_LOCATION=$PWD/onnx/onnxruntime-1.22.0/build/Android/MinSizeRel
-export ORT_INCLUDE_DIR==$PWD/onnx/onnxruntime-1.22.0/include
+export ORT_LIB_LOCATION=$PWD/onnx_build/onnxruntime-1.22.0/build/Android/MinSizeRel
+export ORT_INCLUDE_DIR==$PWD/onnx_build/onnxruntime-1.22.0/include
 
 export TARGET=aarch64-linux-android
-export API=32
 
 # Add the NDK toolchain to your PATH
 export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
