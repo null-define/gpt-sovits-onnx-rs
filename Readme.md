@@ -12,10 +12,6 @@
 >
 > 目前仅支持 **GPT-SoVITS V2**。V3/V4 版本因其更高的计算复杂度，在通用 CPU 上难以实现令人满意的实时推理性能，因此暂不列入支持计划。
 
-> **项目未来**
->
-> 致力于打造一个高效的 CPU 推理方案。如果未来社区出现更高效的实现（例如基于 MNN 且性能更优的方案），本项目将完成其探索使命并停止积极开发，以避免重复工作。
-
 -----
 
 ## 核心特性
@@ -106,6 +102,14 @@ cargo build --release
 1. **环境准备**:
       * 安装 CMake ≥ 3.28 (推荐使用 Conda 安装以避免系统版本限制)。
       * 下载并配置 Android NDK 与 SDK，并设置好相关环境变量。
+      * 在~/.cargo/config.toml中设置好`[target.aarch64-linux-android]`的linker和ar,注意最好高于androidN-clang的N最好>=28并和build_for_android.sh中的android_api参数一致,比如
+
+      ```toml
+      [target.aarch64-linux-android]
+      linker = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android32-clang"
+      ar = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+      ```
+
 2. **首次构建**:
       * 运行一键式脚本，该脚本将自动完成 ONNX Runtime 源码下载、编译，并构建适用于 Android 的可执行文件和动态库。
     <!-- end list -->
