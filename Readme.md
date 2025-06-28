@@ -22,7 +22,7 @@
 
 * **输出稳定性不足**：存在偶发性的音频提前截断等问题，将在后续版本中逐步修复。
 * **性能仍在优化中**：详细性能数据请参考 [**性能记录 (perf\_record)**](doc/perf_record.md)。
-* **英文gp2en仍在优化**: 引入了g2pen模型支持，改善了中英文混合。英文TTS的效果，但是效果似乎和耗时不如默认方式稳定，仍在优化中, 使用方法详见【模型下载】部分
+* **英文gp2en仍在优化**: 引入了g2pen模型支持，改善了中英文混合、英文TTS的效果，但是效果似乎和耗时不如默认方式稳定，仍在优化中, 使用方法详见【模型下载】部分
 * **尝试引入粤语支持**: 通过在运行时设置lang_id为LangId::AutoYue，可以启用粤语模式。注意，这个API仍在实验中，粤语的效果不确定是否正常（因为我不会粤语），可能后续会有所更改。
 
 -----
@@ -102,7 +102,7 @@ cargo build --release
 1. **环境准备**:
       * 安装 CMake ≥ 3.28 (推荐使用 Conda 安装以避免系统版本限制)。
       * 下载并配置 Android NDK 与 SDK，并设置好相关环境变量。
-      * 在~/.cargo/config.toml中设置好`[target.aarch64-linux-android]`的linker和ar,注意最好高于androidN-clang的N最好>=28并和build_for_android.sh中的android_api参数一致,比如
+      * 在~/.cargo/config.toml中设置好`[target.aarch64-linux-android]`的linker和ar,注意androidN-clang的N最好>=28，最好保证build_for_android.sh中的android_api参数一致,比如
 
       ```toml
       [target.aarch64-linux-android]
