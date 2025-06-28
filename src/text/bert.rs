@@ -1,11 +1,12 @@
-use std::sync::Arc;
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use anyhow::Ok;
 use log::{debug, warn};
 use ndarray::{Array1, Array2, Axis, concatenate};
 use ort::{inputs, session::Session, value::Tensor};
+use tokenizers::Tokenizer;
 
-use crate::text::utils;
+use crate::{onnx_builder::create_onnx_cpu_session, text::utils::BERT_TOKENIZER};
 
 #[derive(Debug)]
 pub struct BertModel {
@@ -14,13 +15,14 @@ pub struct BertModel {
 }
 
 impl BertModel {
-    pub fn new(
-        session: Option<Session>,
-        tokenizer: Arc<tokenizers::Tokenizer>,
-    ) -> anyhow::Result<Self> {
+    pub fn new<P: AsRef<Path>>(path: Option<P>) -> anyhow::Result<Self> {
+        let mut model = None;
+        if let Some(path) = path {
+            model = Some(create_onnx_cpu_session(path)?);
+        }
         Ok(Self {
-            model: session,
-            tokenizers: Some(tokenizer),
+            model: model,
+            tokenizers: Some(Arc::new(Tokenizer::from_str(BERT_TOKENIZER).unwrap())),
         })
     }
 

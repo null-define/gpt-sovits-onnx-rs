@@ -1,30 +1,29 @@
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
-use jieba_rs::Jieba;
 use log::{debug, info};
-use ndarray::{Array, Array1, Array2, ArrayBase, Axis, IxDyn, OwnedRepr, Slice, concatenate, s};
+use ndarray::{Array, Array1, Array2, ArrayBase, Axis, IxDyn, OwnedRepr, Slice, s};
 use ort::{
     execution_providers::CPUExecutionProvider,
     inputs,
     session::{Session, builder::GraphOptimizationLevel},
     value::TensorRef,
 };
-use std::sync::Arc;
 use std::time::SystemTime;
-use std::{fs::File, path::Path, str::FromStr};
-use tokenizers::Tokenizer;
+use std::{fs::File, path::Path};
 use tokio::task::block_in_place;
 
 mod audio_filter;
 mod error;
+mod onnx_builder;
 mod text;
 
+use onnx_builder::create_onnx_cpu_session;
+pub use text::LangId;
+
 use crate::{
-    audio_filter::{
-        AudioFilterPluginSystem, EqualizerPass, HighPassPass, NoiseReductionPass, ReverbPass,
-    },
-    text::{TextProcessor, bert::BertModel, g2pw::G2PWConverter},
+    audio_filter::{AudioFilterPluginSystem, HighPassPass, ReverbPass},
+    text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW},
 };
 pub use error::GSVError;
 
@@ -33,8 +32,6 @@ const T2S_DECODER_EOS: i64 = 1024;
 const CUT_LEN: usize = 32;
 
 type KvDType = f32;
-
-static BERT_TOKENIZER: &str = include_str!("../resource/g2pw_tokenizer.json");
 
 #[derive(Clone)]
 pub struct ReferenceData {
@@ -64,8 +61,12 @@ const INITIAL_CACHE_SIZE: usize = 2048;
 const CACHE_REALLOC_INCREMENT: usize = 1024;
 
 impl TTSModel {
+    /// create new tts instance
+    /// bert_path, g2pw_path and g2p_en_path can be None
+    /// if bert path is none, the speech speed in chinese may become worse
+    /// if g2pw path is none, the chinese speech quality may be worse
+    /// g2p_en is still experimental, english speak quality may not be better because of bugs
     pub fn new<P: AsRef<Path>>(
-        g2pw_path: P,
         sovits_path: P,
         ssl_path: P,
         t2s_encoder_path: P,
@@ -73,18 +74,10 @@ impl TTSModel {
         t2s_s_decoder_path: P,
         num_layers: usize,
         bert_path: Option<P>,
+        g2pw_path: Option<P>,
+        g2p_en_path: Option<P>,
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
-
-        let create_session = |path: P| {
-            Session::builder()?
-                .with_execution_providers([CPUExecutionProvider::default()
-                    .with_arena_allocator(true)
-                    .build()])?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(8)?
-                .commit_from_file(path)
-        };
 
         // let create_session_with_profiling = |path: P| {
         //     Session::builder()?
@@ -106,34 +99,20 @@ impl TTSModel {
 
         let mut audio_filter = AudioFilterPluginSystem::new(output_spec);
 
-        let equalizer_pass = Box::new(EqualizerPass::new(output_spec.sample_rate, 512));
-        audio_filter.add_pass(equalizer_pass);
-
-        // Add high-pass pass
-        let high_pass = Box::new(HighPassPass::new(output_spec.sample_rate, 128.0));
-        audio_filter.add_pass(high_pass);
-
-        let noise_reduction = Box::new(NoiseReductionPass::new(output_spec.sample_rate, 512));
-        audio_filter.add_pass(noise_reduction);
+        audio_filter.add_pass(Box::new(HighPassPass::new(output_spec.sample_rate, 128.0)));
+        audio_filter.add_pass(Box::new(ReverbPass::new(output_spec.sample_rate)));
 
         Ok(TTSModel {
             text_processor: TextProcessor::new(
-                Jieba::new(),
-                G2PWConverter::new(
-                    create_session(g2pw_path)?,
-                    Arc::new(Tokenizer::from_str(BERT_TOKENIZER).unwrap()),
-                )?,
-                BertModel::new(
-                    bert_path.map(|p| create_session(p)).transpose().unwrap(),
-                    Arc::new(Tokenizer::from_str(BERT_TOKENIZER).unwrap()),
-                )?,
-                text::symbols::SYMBOLS.clone(),
+                G2PW::new(g2pw_path)?,
+                G2pEn::new(g2p_en_path)?,
+                BertModel::new(bert_path)?,
             )?,
-            sovits: create_session(sovits_path)?,
-            ssl: create_session(ssl_path)?,
-            t2s_encoder: create_session(t2s_encoder_path)?,
-            t2s_fs_decoder: create_session(t2s_fs_decoder_path)?,
-            t2s_s_decoder: create_session(t2s_s_decoder_path)?,
+            sovits: create_onnx_cpu_session(sovits_path)?,
+            ssl: create_onnx_cpu_session(ssl_path)?,
+            t2s_encoder: create_onnx_cpu_session(t2s_encoder_path)?,
+            t2s_fs_decoder: create_onnx_cpu_session(t2s_fs_decoder_path)?,
+            t2s_s_decoder: create_onnx_cpu_session(t2s_s_decoder_path)?,
             ref_data: None,
             num_layers,
             audio_filter,
@@ -154,14 +133,25 @@ impl TTSModel {
         }
     }
 
+    /// run reference with async fn
+    ///
+    /// `reference_audio_path` shall be input wav(16khz) path
+    ///
+    /// `ref_text` is input ref text
+    ///
+    /// `lang_id` can be LangId::Auto(Mandarin) or LangId::AutoYue（cantonese）
+    ///
     pub async fn process_reference<P: AsRef<Path>>(
         &mut self,
         reference_audio_path: P,
         ref_text: &str,
+        lang_id: LangId,
     ) -> Result<(), GSVError> {
         info!("Processing reference audio and text: {}", ref_text);
         let ref_text = ensure_punctuation(ref_text);
-        let phones = self.text_processor.get_phone_and_bert(&ref_text)?;
+        let phones = self
+            .text_processor
+            .get_phone_and_bert(&ref_text, lang_id)?;
         let ref_seq: Vec<i64> = phones.iter().fold(Vec::new(), |mut seq, p| {
             seq.extend(p.1.clone());
             seq
@@ -169,11 +159,7 @@ impl TTSModel {
 
         let ref_bert: Vec<Array2<f32>> = phones.iter().map(|f| f.2.clone()).collect();
 
-        //
-
         let ref_seq = Array2::from_shape_vec((1, ref_seq.len()), ref_seq)?;
-        // let mut ref_bert = Array2::<f32>::zeros((ref_seq.shape()[1], 1024));
-
         let (ref_audio_16k, ref_audio_32k) = read_and_resample_audio(&reference_audio_path)?;
         let ssl_content = self.process_ssl(&ref_audio_16k)?;
 
@@ -201,12 +187,21 @@ impl TTSModel {
             .into_owned())
     }
 
+    /// run reference
+    ///
+    /// `reference_audio_path` shall be input wav(16khz) path
+    ///
+    /// `ref_text` is input ref text
+    ///
+    /// `lang_id` can be LangId::Auto(Mandarin) or LangId::AutoYue（cantonese）
+    ///
     pub fn process_reference_sync<P: AsRef<Path>>(
         &mut self,
         reference_audio_path: P,
         ref_text: &str,
+        lang_id: LangId,
     ) -> Result<(), GSVError> {
-        Self::run_async_in_context(self.process_reference(reference_audio_path, ref_text))
+        Self::run_async_in_context(self.process_reference(reference_audio_path, ref_text, lang_id))
     }
 
     /// Efficiently runs the streaming decoder loop with a pre-allocated, resizable KV cache.
@@ -328,9 +323,16 @@ impl TTSModel {
         }
     }
 
+    /// synthesize async
+    ///
+    /// `text` is input text for run
+    ///
+    /// `lang_id` can be LangId::Auto(Mandarin) or LangId::AutoYue（cantonese）
+    ///
     pub async fn synthesize(
         &mut self,
         text: &str,
+        lang_id: LangId,
     ) -> Result<
         (
             WavSpec,
@@ -345,7 +347,7 @@ impl TTSModel {
         let spec = self.output_spec;
         let text = ensure_punctuation(text);
         let time = SystemTime::now();
-        let texts_and_seqs = self.text_processor.get_phone_and_bert(&text)?;
+        let texts_and_seqs = self.text_processor.get_phone_and_bert(&text, lang_id)?;
         debug!("g2pw and preprocess time: {:?}", time.elapsed()?);
         let ref_data = ref_data.clone();
 
@@ -367,7 +369,7 @@ impl TTSModel {
 
     async fn in_stream_once_gen(
         &mut self,
-        text: &str,
+        _text: &str,
         text_bert: &Array2<f32>,
         text_seq_vec: &[i64],
         ref_data: &ReferenceData,
@@ -483,9 +485,19 @@ impl TTSModel {
         Ok(audio)
     }
 
-    pub fn synthesize_sync(&mut self, text: &str) -> Result<(WavSpec, Vec<f32>), GSVError> {
+    /// synthesize
+    ///
+    /// `text` is input text for run
+    ///
+    /// `lang_id` can be LangId::Auto(Mandarin) or LangId::AutoYue（cantonese）
+    ///
+    pub fn synthesize_sync(
+        &mut self,
+        text: &str,
+        lang_id: LangId,
+    ) -> Result<(WavSpec, Vec<f32>), GSVError> {
         Self::run_async_in_context(async {
-            let (spec, stream) = self.synthesize(text).await?;
+            let (spec, stream) = self.synthesize(text, lang_id).await?;
             let mut samples = Vec::new();
             futures::pin_mut!(stream);
             while let Some(sample) = stream.next().await {

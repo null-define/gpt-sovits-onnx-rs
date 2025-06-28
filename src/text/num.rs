@@ -1,5 +1,13 @@
 use std::collections::LinkedList;
 
+use anyhow::Result;
+use pest::Parser;
+
+use crate::{
+    text::Lang,
+    text::{PhoneBuilder, Sentence},
+};
+
 #[derive(pest_derive::Parser)]
 #[grammar = "resource/rule.pest"]
 pub struct ExprParser;
@@ -645,4 +653,43 @@ pub mod en {
         }
         Ok(())
     }
+}
+#[derive(Debug)]
+pub struct NumSentence {
+    pub text: String,
+    pub lang: Lang,
+}
+
+static NUM_OP: [char; 8] = ['+', '-', '*', '×', '/', '÷', '=', '%'];
+
+impl NumSentence {
+    pub fn need_drop(&self) -> bool {
+        let num_text = self.text.trim();
+        num_text.is_empty() || num_text.chars().all(|c| NUM_OP.contains(&c))
+    }
+
+    pub fn is_link_symbol(&self) -> bool {
+        self.text == "-"
+    }
+
+    pub fn to_phone_sentence(&self) -> Result<LinkedList<Sentence>> {
+        let mut builder = PhoneBuilder::new();
+        let pairs = ExprParser::parse(Rule::all, &self.text)?;
+        for pair in pairs {
+            match self.lang {
+                Lang::Zh => zh::parse_all(pair, &mut builder)?,
+                Lang::En => en::parse_all(pair, &mut builder)?
+            }
+        }
+        Ok(builder.sentences)
+    }
+}
+
+pub fn is_numeric(p: &str) -> bool {
+    p.chars().any(|c| c.is_numeric())
+        || p.contains(&NUM_OP)
+        || p.to_lowercase().contains(&[
+            'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π', 'ρ',
+            'σ', 'ς', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
+        ])
 }

@@ -12,3 +12,8 @@ lazy_static! {
         symbols
     };
 }
+
+#[inline]
+pub fn get_phone_symbol(ph: &str) -> i64 {
+    SYMBOLS.get(ph).copied().unwrap_or(3)
+}

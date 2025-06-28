@@ -2,12 +2,21 @@ use std::collections::HashMap;
 
 use ndarray::{ArrayView, IntoDimension, IxDyn};
 
-use crate::text::g2pw::{MonoChar, PolyChar};
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PolyChar {
+    pub index: usize,
+    pub phones: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MonoChar {
+    pub phone: String,
+}
+
 pub static MONO_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_mono_chars.json");
 pub static POLY_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_poly_chars.json");
-pub static LABELS: &str = include_str!("../../resource/g2pw/dict_poly_index_list.json");
 pub static DEFAULT_ZH_WORD_DICT: &str = include_str!("../../resource/zh_word_dict.json");
-
+pub static BERT_TOKENIZER: &str = include_str!("../../resource/g2pw_tokenizer.json");
 
 
 pub fn load_mono_chars() -> HashMap<char, MonoChar> {
@@ -31,11 +40,9 @@ pub fn load_poly_chars() -> HashMap<char, PolyChar> {
 }
 
 lazy_static::lazy_static! {
-    pub static ref DICT_MONO_CHARS: HashMap<char, MonoChar> =load_mono_chars();
+    pub static ref DICT_MONO_CHARS: HashMap<char, MonoChar> = load_mono_chars();
     pub static ref DICT_POLY_CHARS: HashMap<char, PolyChar> = load_poly_chars();
-    pub static ref POLY_LABLES: Vec<String> = serde_json::from_str(LABELS).unwrap();
 }
-
 
 pub fn str_is_chinese(s: &str) -> bool {
     let mut r = true;

@@ -15,13 +15,10 @@ struct Args {
     model_path: PathBuf,
     #[arg(long, default_value_t = 1)]
     run_count: usize,
-    #[arg(
-        long,
-        default_value = "小鱼想成为你的好朋友，而不仅仅是一个可爱的AI助理。"
-    )]
-    sync_text: String,
-    #[arg(long, default_value = "你好呀，我们是一群追逐梦想的人！")]
-    async_text: String,
+    #[arg(long, default_value = "喜欢我小鱼吗？小子！")]
+    text: String,
+    #[arg(long, default_value = "zh")] // can be zh/yue
+    lang: String,
     #[arg(long, default_value = "格式化，可以给自家的奶带来大量的。")]
     ref_text: String,
 }
@@ -64,7 +61,6 @@ impl TimingStats {
 
 fn create_model(assets_dir: &Path) -> Result<TTSModel, GSVError> {
     TTSModel::new(
-        assets_dir.join("g2pW.onnx"),
         assets_dir.join("custom_vits.onnx"),
         assets_dir.join("ssl.onnx"),
         assets_dir.join("custom_t2s_encoder.onnx"),
@@ -72,6 +68,8 @@ fn create_model(assets_dir: &Path) -> Result<TTSModel, GSVError> {
         assets_dir.join("custom_t2s_s_decoder.onnx"),
         24,
         Some(assets_dir.join("bert.onnx")),
+        Some(assets_dir.join("g2pW.onnx")),
+        Some(assets_dir.join("g2p_en")), // assume you have g2p en mode downloaded, can be none
     )
 }
 
@@ -84,45 +82,21 @@ fn write_wav(spec: WavSpec, samples: &[f32], filename: &str) -> Result<(), GSVEr
     Ok(())
 }
 
-async fn run_async_inference(
-    model: &mut TTSModel,
-    text: &str,
-    runs: usize,
-    output_file: &str,
-) -> Result<TimingStats, GSVError> {
-    let mut times = Vec::with_capacity(runs);
-    for i in 0..runs {
-        let start = Instant::now();
-        let (spec, stream) = model.synthesize(text).await?;
-        let mut writer = if i == runs - 1 {
-            Some(WavWriter::create(output_file, spec)?)
-        } else {
-            None
-        };
-        futures::pin_mut!(stream);
-        while let Some(sample) = stream.next().await {
-            if let Some(ref mut w) = writer {
-                w.write_sample(sample?)?;
-            }
-        }
-        if let Some(w) = writer {
-            w.finalize()?;
-        }
-        times.push(start.elapsed().as_secs_f64() * 1000.0);
-    }
-    Ok(TimingStats::new(&times))
-}
-
 fn run_sync_inference(
     model: &mut TTSModel,
     text: &str,
+    lang: &str,
     runs: usize,
     output_file: &str,
 ) -> Result<TimingStats, GSVError> {
     let mut times = Vec::with_capacity(runs);
+    let mut lang_id = LangId::Auto;
+    if lang == "yue" {
+        lang_id = LangId::AutoYue;
+    }
     for i in 0..runs {
         let start = Instant::now();
-        let (spec, samples) = model.synthesize_sync(text)?;
+        let (spec, samples) = model.synthesize_sync(text, lang_id)?;
         if i == runs - 1 {
             write_wav(spec, &samples, output_file)?;
         }
@@ -136,34 +110,22 @@ fn main() -> Result<(), GSVError> {
     let args = Args::parse();
 
     let mut model = create_model(&args.model_path)?;
-    model.process_reference_sync(args.model_path.join("ref.wav"), &args.ref_text)?;
+    model.process_reference_sync(
+        args.model_path.join("ref.wav"),
+        &args.ref_text,
+        LangId::Auto,
+    )?;
 
-    let rt = Runtime::new()?;
-    let run_sync = !args.sync_text.is_empty();
-    let run_async = !args.async_text.is_empty();
+    let lang = args.lang;
 
-    if run_sync {
-        let stats = run_sync_inference(
-            &mut model,
-            &args.sync_text,
-            args.run_count,
-            "output_sync.wav",
-        )?;
-        stats.print("Synchronous", args.run_count);
-    }
-
-    if run_async {
-        rt.block_on(async {
-            let stats = run_async_inference(
-                &mut model,
-                &args.async_text,
-                args.run_count,
-                "output_async.wav",
-            )
-            .await;
-            stats.unwrap().print("Asynchronous", args.run_count);
-        });
-    }
+    let stats = run_sync_inference(
+        &mut model,
+        &args.text,
+        &lang,
+        args.run_count,
+        "output.wav",
+    )?;
+    stats.print("Synchronous", args.run_count);
 
     Ok(())
 }

@@ -135,7 +135,6 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     };
 
     match TTSModel::new(
-        Path::new(&g2p_w),
         Path::new(&vits),
         Path::new(&ssl),
         Path::new(&t2s_encoder),
@@ -143,6 +142,8 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
         Path::new(&t2s_s_decoder),
         max_length_usize,
         Some(Path::new(&bert)),
+        Some(Path::new(&g2p_w)),
+        None,
     ) {
         Ok(model) => Box::into_raw(Box::new(model)) as jlong,
         Err(e) => {
@@ -188,7 +189,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_processRe
         }
     };
 
-    match model.process_reference_sync(Path::new(&ref_audio), &ref_text) {
+    match model.process_reference_sync(Path::new(&ref_audio), &ref_text, LangId::Auto) {
         Ok(_) => JNI_TRUE,
         Err(e) => {
             env.throw_new(
@@ -221,7 +222,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInfere
         }
     };
 
-    match model.synthesize_sync(&text) {
+    match model.synthesize_sync(&text, LangId::Auto) {
         Ok((_, samples_vec)) => {
             // Fix deprecated into_raw_vec
             let float_array = match env.new_float_array(samples_vec.len() as i32) {
