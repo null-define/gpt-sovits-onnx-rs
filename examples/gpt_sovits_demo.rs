@@ -15,7 +15,7 @@ struct Args {
     model_path: PathBuf,
     #[arg(long, default_value_t = 1)]
     run_count: usize,
-    #[arg(long, default_value = "喜欢我小鱼吗？小子！")]
+    #[arg(long, default_value = "你好呀，我们是一群追逐梦想的人！")]
     text: String,
     #[arg(long, default_value = "zh")] // can be zh/yue
     lang: String,

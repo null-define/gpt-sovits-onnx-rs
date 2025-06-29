@@ -60,8 +60,12 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
 
     # Simplify non-BERT models
     if "bert" not in output_lower:
-        model, _ = simplify(model, include_subgraph=True)
-        logger.info(f"ONNX simplification done for: {output_path}")
+        # if "vits" not in output_lower:
+        #     model, _ = simplify(model, include_subgraph=True)
+        #     logger.info(f"ONNX simplification done for: {output_path}")
+        # else:
+        #     pass
+        pass
     else:
         # BERT model optimization
         from onnxruntime.transformers import optimizer
@@ -86,10 +90,13 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
     logger.info(f"ONNX optimization done for: {output_path}")
 
     # Slim optimization
-    from onnxslim import slim
-
-    model = slim(model)
-    logger.info(f"ONNX slim optimization done for: {output_path}")
+    if "vits" not in output_lower:
+        from onnxslim import slim
+        model = slim(model)
+        logger.info(f"ONNX slim optimization done for: {output_path}")
+    else:
+        model, _ = simplify(model, include_subgraph=True)
+        logger.info(f"ONNX simplification done for: {output_path}")
 
     # Opset conversion
     model = version_converter.convert_version(model, 21)
