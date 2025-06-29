@@ -1,13 +1,15 @@
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
-use log::{debug, info};
-use ndarray::{Array, Array1, Array2, ArrayBase, Axis, IxDyn, OwnedRepr, Slice, s};
+use log::{debug, info, warn};
+use ndarray::{
+    Array, Array1, Array2, ArrayBase, ArrayD, Axis, DimMax, IxDyn, OwnedRepr, Slice, concatenate, s,
+};
 use ort::{
     execution_providers::CPUExecutionProvider,
     inputs,
     session::{Session, builder::GraphOptimizationLevel},
-    value::TensorRef,
+    value::{Tensor, TensorRef},
 };
 use std::time::SystemTime;
 use std::{fs::File, path::Path};
@@ -15,6 +17,7 @@ use tokio::task::block_in_place;
 
 mod audio_filter;
 mod error;
+mod logits_sampler;
 mod onnx_builder;
 mod text;
 
@@ -23,9 +26,11 @@ pub use text::LangId;
 
 use crate::{
     audio_filter::{AudioFilterPluginSystem, HighPassPass, ReverbPass},
+    logits_sampler::LogitsSampler,
     text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW},
 };
 pub use error::GSVError;
+pub use logits_sampler::{SamplingParams, SamplingParamsBuilder};
 
 const EARLY_STOP_NUM: usize = 1500;
 const T2S_DECODER_EOS: i64 = 1024;
@@ -149,15 +154,19 @@ impl TTSModel {
     ) -> Result<(), GSVError> {
         info!("Processing reference audio and text: {}", ref_text);
         let ref_text = ensure_punctuation(ref_text);
-        let phones = self
-            .text_processor
-            .get_phone_and_bert(&ref_text, lang_id)?;
+        let phones = self.text_processor.get_phone_and_bert(&ref_text, lang_id)?;
         let ref_seq: Vec<i64> = phones.iter().fold(Vec::new(), |mut seq, p| {
             seq.extend(p.1.clone());
             seq
         });
 
         let ref_bert: Vec<Array2<f32>> = phones.iter().map(|f| f.2.clone()).collect();
+        // Concatenate along dimension 0
+        let ref_bert = concatenate(
+            Axis(0),
+            &ref_bert.iter().map(|v| v.view()).collect::<Vec<_>>(),
+        )
+        .unwrap();
 
         let ref_seq = Array2::from_shape_vec((1, ref_seq.len()), ref_seq)?;
         let (ref_audio_16k, ref_audio_32k) = read_and_resample_audio(&reference_audio_path)?;
@@ -165,7 +174,7 @@ impl TTSModel {
 
         self.ref_data = Some(ReferenceData {
             ref_seq,
-            ref_bert: ref_bert[0].clone(),
+            ref_bert: ref_bert,
             ref_audio_32k,
             ssl_content,
         });
@@ -207,7 +216,9 @@ impl TTSModel {
     /// Efficiently runs the streaming decoder loop with a pre-allocated, resizable KV cache.
     fn run_t2s_s_decoder_loop(
         &mut self,
-        mut y: ArrayBase<OwnedRepr<i64>, IxDyn>,
+        sampler: &mut LogitsSampler,
+        sampling_param: SamplingParams,
+        mut y_vec: Vec<i64>,
         mut y_emb: ArrayBase<OwnedRepr<f32>, IxDyn>,
         x_example: ArrayBase<OwnedRepr<f32>, IxDyn>,
         mut k_caches: Vec<ArrayBase<OwnedRepr<KvDType>, IxDyn>>,
@@ -221,7 +232,7 @@ impl TTSModel {
         loop {
             // --- 1. Prepare inputs using views of the valid cache portion ---
             let mut inputs = inputs![
-                "iy" => TensorRef::from_array_view(&y).unwrap(),
+                "iy" => Tensor::from_array(Array2::from_shape_vec((1, y_vec.len()), y_vec.clone())?).unwrap(),
                 "iy_emb" => TensorRef::from_array_view(&y_emb).unwrap(),
                 "x_example" => TensorRef::from_array_view(&x_example).unwrap()
             ];
@@ -244,7 +255,17 @@ impl TTSModel {
             // --- 2. Run the decoder model for one step ---
             let output = self.t2s_s_decoder.run(inputs)?;
 
-            y = output["y"].try_extract_array::<i64>()?.into_owned();
+            let logits = output["logits"].try_extract_array::<f32>()?.into_owned();
+            let (logits, _) = logits.into_raw_vec_and_offset();
+            if idx <= 10 {
+                let sampling_rst =
+                    sampler.sample(logits, &y_vec, &sampling_param, &[T2S_DECODER_EOS]);
+                // debug!("sampled token {}", sampling_rst);
+                y_vec.push(sampling_rst);
+            } else {
+                let sampling_rst = sampler.sample(logits, &y_vec, &sampling_param, &[]);
+                y_vec.push(sampling_rst);
+            }
             y_emb = output["y_emb"].try_extract_array::<f32>()?.into_owned();
 
             // --- 3. Check for reallocation and update caches ---
@@ -306,18 +327,20 @@ impl TTSModel {
 
             // --- 4. Update valid length and check stop condition ---
             valid_len = new_valid_len;
+            // debug!("y_vec : {:?}", y_vec);
 
-            if idx > 10
-                && (idx >= 1500
-                    || (y.shape()[1] - prefix_len) > EARLY_STOP_NUM
-                    || y.last().map_or(false, |&v| v == T2S_DECODER_EOS))
+            if (y_vec.len() >= 1500
+                || (y_vec.len() - prefix_len) > EARLY_STOP_NUM
+                || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS))
             {
+                let sliced = y_vec
+                    .split_off(y_vec.len() - idx)
+                    .into_iter()
+                    .map(|i| if i == T2S_DECODER_EOS { 0 } else { i })
+                    .collect::<Vec<i64>>();
+                let y = ArrayD::from_shape_vec(IxDyn(&[1, 1, sliced.len()]), sliced)?;
                 debug!("t2s final idx: {}", idx);
-                let seq_len = y.shape()[1];
-                return Ok(y
-                    .slice_axis(Axis(1), Slice::from(prefix_len..seq_len))
-                    .map(|&i| if i == T2S_DECODER_EOS { 0 } else { i })
-                    .insert_axis(Axis(0)));
+                return Ok(y);
             }
             idx += 1;
         }
@@ -332,6 +355,7 @@ impl TTSModel {
     pub async fn synthesize(
         &mut self,
         text: &str,
+        sampling_param: SamplingParams,
         lang_id: LangId,
     ) -> Result<
         (
@@ -353,7 +377,7 @@ impl TTSModel {
 
         let stream = stream! {
             for (text, seq, bert) in texts_and_seqs {
-                match self.in_stream_once_gen(&text, &bert, &seq, &ref_data).await {
+                match self.in_stream_once_gen(&text, &bert, &seq, &ref_data, sampling_param).await {
                     Ok(samples) => {
                         for sample in samples {
                             yield Ok(sample);
@@ -373,9 +397,11 @@ impl TTSModel {
         text_bert: &Array2<f32>,
         text_seq_vec: &[i64],
         ref_data: &ReferenceData,
+        sampling_param: SamplingParams,
     ) -> Result<Vec<f32>, GSVError> {
         let text_seq = Array2::from_shape_vec((1, text_seq_vec.len()), text_seq_vec.to_vec())?;
         // let mut text_bert = Array2::<f32>::zeros((text_seq.shape()[1], 1024));
+        let mut sampler = LogitsSampler::new();
 
         let (x, prompts) = {
             let time = SystemTime::now();
@@ -394,9 +420,10 @@ impl TTSModel {
                     .into_owned(),
             )
         };
+        let (mut y_vec, _) = prompts.clone().into_raw_vec_and_offset();
 
-        let prefix_len = prompts.dim()[1];
-        let (y, y_emb, x_example, k_caches, v_caches, initial_seq_len) = {
+        let prefix_len = y_vec.len();
+        let (y_vec, y_emb, x_example, k_caches, v_caches, initial_seq_len) = {
             let time = SystemTime::now();
             let fs_decoder_output = self.t2s_fs_decoder.run(inputs![
                 "x" => TensorRef::from_array_view(&x)?,
@@ -404,8 +431,8 @@ impl TTSModel {
             ])?;
             debug!("T2S FS Decoder time: {:?}", time.elapsed()?);
 
-            let y = fs_decoder_output["y"]
-                .try_extract_array::<i64>()?
+            let logits = fs_decoder_output["logits"]
+                .try_extract_array::<f32>()?
                 .into_owned();
             let y_emb = fs_decoder_output["y_emb"]
                 .try_extract_array::<f32>()?
@@ -448,16 +475,27 @@ impl TTSModel {
                 k_caches.push(k_large);
                 v_caches.push(v_large);
             }
-            (y, y_emb, x_example, k_caches, v_caches, initial_seq_len)
+            let (logits_vec, _) = logits.into_raw_vec_and_offset();
+            let sampling_rst = sampler.sample(
+                logits_vec,
+                &y_vec,
+                &sampling_param,
+                &[T2S_DECODER_EOS], // avoid breath
+            );
+            debug!("sampled token {}", sampling_rst);
+            y_vec.push(sampling_rst);
+            (y_vec, y_emb, x_example, k_caches, v_caches, initial_seq_len)
         };
 
         let time = SystemTime::now();
         let pred_semantic = self.run_t2s_s_decoder_loop(
-            y,
+            &mut sampler,
+            sampling_param,
+            y_vec,
             y_emb,
             x_example,
-            k_caches,
-            v_caches,
+            k_caches.clone(),
+            v_caches.clone(),
             prefix_len,
             initial_seq_len,
         )?;
@@ -494,10 +532,11 @@ impl TTSModel {
     pub fn synthesize_sync(
         &mut self,
         text: &str,
+        sampling_param: SamplingParams,
         lang_id: LangId,
     ) -> Result<(WavSpec, Vec<f32>), GSVError> {
         Self::run_async_in_context(async {
-            let (spec, stream) = self.synthesize(text, lang_id).await?;
+            let (spec, stream) = self.synthesize(text, sampling_param, lang_id).await?;
             let mut samples = Vec::new();
             futures::pin_mut!(stream);
             while let Some(sample) = stream.next().await {

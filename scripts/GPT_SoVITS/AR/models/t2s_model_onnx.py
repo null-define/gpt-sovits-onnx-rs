@@ -98,10 +98,6 @@ class T2SFirstStageDecoder(nn.Module):
         ar_audio_position,
         h,
         ar_predict_layer,
-        loss_fct,
-        ar_accuracy_metric,
-        top_k,
-        early_stop_num,
         num_layers,
     ):
         super().__init__()
@@ -109,10 +105,6 @@ class T2SFirstStageDecoder(nn.Module):
         self.ar_audio_position = ar_audio_position
         self.h = h
         self.ar_predict_layer = ar_predict_layer
-        self.loss_fct = loss_fct
-        self.ar_accuracy_metric = ar_accuracy_metric
-        self.top_k = top_k
-        self.early_stop_num = early_stop_num
         self.num_layers = num_layers
 
     def forward(self, x, prompt):
@@ -143,10 +135,10 @@ class T2SFirstStageDecoder(nn.Module):
 
         xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=k_cache, v_cache=v_cache, first_infer=True)
         logits = self.ar_predict_layer(xy_dec[:, -1])
-        samples = sample(logits[0], y, top_k=self.top_k, top_p=1.0, repetition_penalty=1.35)[0].unsqueeze(0)
+        # samples = sample(logits[0], y,top_k=self.top_k, top_p = 1.0, temperature=1.0)[0].unsqueeze(0) # 避免句首不稳定
 
-        y = torch.concat([y, samples], dim=1)
-        return y, k_cache, v_cache, y_emb_cache, x_example
+        # y = torch.concat([y, samples], dim=1)
+        return logits[0], k_cache, v_cache, y_emb_cache, x_example
 
 class T2SStageDecoder(nn.Module):
     def __init__(
@@ -155,10 +147,6 @@ class T2SStageDecoder(nn.Module):
         ar_audio_position,
         h,
         ar_predict_layer,
-        loss_fct,
-        ar_accuracy_metric,
-        top_k,
-        early_stop_num,
         num_layers,
     ):
         super().__init__()
@@ -166,10 +154,6 @@ class T2SStageDecoder(nn.Module):
         self.ar_audio_position = ar_audio_position
         self.h = h
         self.ar_predict_layer = ar_predict_layer
-        self.loss_fct = loss_fct
-        self.ar_accuracy_metric = ar_accuracy_metric
-        self.top_k = top_k
-        self.early_stop_num = early_stop_num
         self.num_layers = num_layers
 
     def forward(self, y, k_cache, v_cache, y_emb, x_example):
@@ -183,13 +167,13 @@ class T2SStageDecoder(nn.Module):
 
         xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=k_cache, v_cache=v_cache, first_infer=False)
         logits = self.ar_predict_layer(xy_dec[:, -1])
-        samples = sample(logits[0], y, top_k=self.top_k, top_p=1.0, repetition_penalty=1.35)[0].unsqueeze(0)
+        # samples = sample(logits[0], y, top_k=self.top_k, top_p = 1.0, temperature=1.0)[0].unsqueeze(0)
 
-        y = torch.concat([y, samples], dim=1)
-        return y, k_cache, v_cache, y_emb
+        # y = torch.concat([y, samples], dim=1)
+        return logits[0], k_cache, v_cache, y_emb
 
 class Text2SemanticDecoder(nn.Module):
-    def __init__(self, config, norm_first=False, top_k=3):
+    def __init__(self, config, norm_first=False):
         super(Text2SemanticDecoder, self).__init__()
         self.model_dim = config["model"]["hidden_dim"]
         self.embedding_dim = config["model"]["embedding_dim"]
@@ -199,9 +183,7 @@ class Text2SemanticDecoder(nn.Module):
         self.vocab_size = config["model"]["vocab_size"]
         self.phoneme_vocab_size = config["model"]["phoneme_vocab_size"]
         self.p_dropout = float(config["model"]["dropout"])
-        self.EOS = config["model"]["EOS"]
         self.norm_first = norm_first
-        assert self.EOS == self.vocab_size - 1
         self.bert_proj = nn.Linear(1024, self.embedding_dim)
         self.ar_text_embedding = TokenEmbedding(self.embedding_dim, self.phoneme_vocab_size, self.p_dropout)
         self.ar_text_position = SinePositionalEmbedding(self.embedding_dim, dropout=0.0, scale=False, alpha=True)
@@ -220,16 +202,6 @@ class Text2SemanticDecoder(nn.Module):
             norm=LayerNorm(self.model_dim) if norm_first else None,
         )
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
-        self.loss_fct = nn.CrossEntropyLoss(reduction="sum")
-        self.ar_accuracy_metric = MulticlassAccuracy(
-            self.vocab_size,
-            top_k=top_k,
-            average="micro",
-            multidim_average="global",
-            ignore_index=self.EOS,
-        )
-        self.top_k = torch.LongTensor([1])
-        self.early_stop_num = torch.LongTensor([-1])
 
     def init_onnx(self):
         self.onnx_encoder = OnnxEncoder(self.ar_text_embedding, self.bert_proj, self.ar_text_position)
@@ -238,10 +210,6 @@ class Text2SemanticDecoder(nn.Module):
             self.ar_audio_position,
             self.h,
             self.ar_predict_layer,
-            self.loss_fct,
-            self.ar_accuracy_metric,
-            self.top_k,
-            self.early_stop_num,
             self.num_layers,
         )
         self.stage_decoder = T2SStageDecoder(
@@ -249,77 +217,8 @@ class Text2SemanticDecoder(nn.Module):
             self.ar_audio_position,
             self.h,
             self.ar_predict_layer,
-            self.loss_fct,
-            self.ar_accuracy_metric,
-            self.top_k,
-            self.early_stop_num,
             self.num_layers,
         )
 
     def forward(self, x, prompts, bert_feature):
-        early_stop_num = self.early_stop_num
-        prefix_len = prompts.shape[1]
-        x = self.onnx_encoder(x, bert_feature)
-        y, k_cache, v_cache, y_emb, x_example = self.first_stage_decoder(x, prompts)
-
-        stop = False
-        for idx in range(1, 1500):
-            y, k_cache, v_cache, y_emb, logits, samples = self.stage_decoder(y, k_cache, v_cache, y_emb, x_example)
-            if early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num:
-                stop = True
-            if torch.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
-                stop = True
-            if stop:
-                break
-        y[0, -1] = 0
-        return y, idx
-
-    def infer(self, x, prompts, bert_feature):
-        top_k = self.top_k
-        early_stop_num = self.early_stop_num
-        x = self.onnx_encoder(x, bert_feature)
-        y = prompts
-        prefix_len = y.shape[1]
-        x_len = x.shape[1]
-        x_example = x[:, :, 0] * 0.0
-        x_attn_mask = torch.matmul(x_example.transpose(0, 1), x_example)
-        x_attn_mask = torch.zeros_like(x_attn_mask, dtype=torch.bool)
-
-        k_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(self.num_layers)]
-        v_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(self.num_layers)]
-
-        stop = False
-        for idx in range(1500):
-            if idx == 0:
-                y_emb = self.ar_audio_embedding(y)
-                y_pos = self.ar_audio_position(y_emb)
-                xy_pos = torch.concat([x, y_pos], dim=1)
-                y_len = y_pos.shape[1]
-                x_attn_mask_pad = F.pad(x_attn_mask, (0, y_len), value=True)
-                y_attn_mask = F.pad(
-                    torch.triu(torch.ones(y_len, y_len, dtype=torch.bool), diagonal=1),
-                    (x_len, 0),
-                    value=False,
-                )
-                xy_attn_mask = torch.concat([x_attn_mask_pad, y_attn_mask], dim=0)
-                xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=k_cache, v_cache=v_cache, first_infer=True)
-            else:
-                y_emb = torch.cat([y_emb, self.ar_audio_embedding(y[:, -1:])], 1)
-                y_pos = self.ar_audio_position(y_emb)
-                xy_pos = y_pos[:, -1:]
-                y_len = y_pos.shape[1]
-                xy_attn_mask = torch.zeros((1, x_len + y_len), dtype=torch.bool)
-                xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=k_cache, v_cache=v_cache, first_infer=False)
-            
-            logits = self.ar_predict_layer(xy_dec[:, -1])
-            samples = sample(logits[0], y, top_k=top_k, top_p=1.0, repetition_penalty=1.35)[0].unsqueeze(0)
-            if early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num:
-                stop = True
-            if torch.argmax(logits, dim=-1)[0] == self.EOS or samples[0, 0] == self.EOS:
-                stop = True
-            if stop:
-                if prompts.shape[1] == y.shape[1]:
-                    y = torch.concat([y, torch.zeros_like(samples)], dim=1)
-                break
-            y = torch.concat([y, samples], dim=1)
-        return y, idx
+        pass

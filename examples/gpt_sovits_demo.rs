@@ -96,7 +96,11 @@ fn run_sync_inference(
     }
     for i in 0..runs {
         let start = Instant::now();
-        let (spec, samples) = model.synthesize_sync(text, lang_id)?;
+        let (spec, samples) = model.synthesize_sync(
+            text,
+            SamplingParamsBuilder::new().top_k(5).top_p(1.0).temperature(0.4).repetition_penalty(1.25).build(),
+            lang_id,
+        )?;
         if i == runs - 1 {
             write_wav(spec, &samples, output_file)?;
         }
@@ -118,13 +122,7 @@ fn main() -> Result<(), GSVError> {
 
     let lang = args.lang;
 
-    let stats = run_sync_inference(
-        &mut model,
-        &args.text,
-        &lang,
-        args.run_count,
-        "output.wav",
-    )?;
+    let stats = run_sync_inference(&mut model, &args.text, &lang, args.run_count, "output.wav")?;
     stats.print("Synchronous", args.run_count);
 
     Ok(())
