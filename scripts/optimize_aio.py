@@ -9,6 +9,10 @@ from onnxsim import simplify
 from onnxruntime.quantization import quantize_dynamic, QuantType
 from onnxoptimizer import optimize, get_fuse_and_elimination_passes
 from onnxconverter_common import float16
+from onnxslim import slim
+from onnxruntime.transformers import optimizer
+
+
 
 # Configure logging
 logging.basicConfig(
@@ -58,19 +62,22 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
     model = onnx.load(file_path)
     output_lower = output_path.lower()
 
-    # Simplify non-BERT models
-    if "bert" not in output_lower:
-        # if "vits" not in output_lower:
-        #     model, _ = simplify(model, include_subgraph=True)
-        #     logger.info(f"ONNX simplification done for: {output_path}")
-        # else:
-        #     pass
-        pass
-    else:
-        # BERT model optimization
-        from onnxruntime.transformers import optimizer
-
+    # vits model may change and have issue in simplify
+    if "vits" in output_lower:
+        model = optimize(model, passes=get_fuse_and_elimination_passes())
+        logger.info(f"ONNX optimization done for: {output_path}")
+        model, _ = simplify(model)
+        logger.info(f"ONNX simplification done for: {output_path}")
+        # model = slim(model)
+        # logger.info(f"ONNX slim optimization done for: {output_path}")
         model = version_converter.convert_version(model, 21)
+        onnx.save(model, output_path)
+        return output_path
+
+    # Simplify non-BERT models
+    if "bert" in output_lower:
+        # BERT model optimization
+
         optimized_model = optimizer.optimize_model(
             model,
             model_type="bert",
@@ -78,33 +85,41 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
             hidden_size=1024,
             only_onnxruntime=True,
         )
+        model = version_converter.convert_version(optimized_model.model, 21)
         if use_int8_quant:
-            quantize_dynamic(optimized_model.model, output_path)
+            quantize_dynamic(model, output_path)
             logger.info(f"INT8 quantization done for: {output_path}")
         else:
-            onnx.save(optimized_model.model, output_path)
+            onnx.save(model, output_path)
         return output_path
-
-    # General optimizations
+    
+    if "decoder" in output_lower:
+        optimized_model = optimizer.optimize_model(
+            model,
+            num_heads=24,
+            hidden_size=768,
+            opt_level=2,
+            # only_onnxruntime=True,
+        )
+        model = optimized_model.model
+    
     model = optimize(model, passes=get_fuse_and_elimination_passes())
     logger.info(f"ONNX optimization done for: {output_path}")
 
-    # Slim optimization
-    if "vits" not in output_lower:
-        from onnxslim import slim
-        model = slim(model)
-        logger.info(f"ONNX slim optimization done for: {output_path}")
-    else:
-        model, _ = simplify(model, include_subgraph=True)
-        logger.info(f"ONNX simplification done for: {output_path}")
-
-    # Opset conversion
+    model = slim(model)
+    logger.info(f"ONNX slim optimization done for: {output_path}")
+    model, _ = simplify(model, include_subgraph=True)
+    logger.info(f"ONNX simplification done for: {output_path}")
+    
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
-
     # INT8 quantization for specific models, do not quant for vits or ssl
     if use_int8_quant and ("g2p" in file_path.lower() or "decoder" in output_lower):
-        quantize_dynamic(model, output_path, per_channel=True)
+        quantize_dynamic(
+            model,
+            output_path,
+            op_types_to_quantize=["MatMul", "Attention", "Gather"],
+        )
         logger.info(f"INT8 quantization done for: {output_path}")
     else:
         onnx.save(model, output_path)

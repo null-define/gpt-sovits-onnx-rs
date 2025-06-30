@@ -106,7 +106,6 @@ class T2SModel(nn.Module):
         logits, k_cache, v_cache, y_emb, x_example = self.first_stage_decoder(x, prompts)
         samples = sample(logits, prompts,top_k=15, top_p = 1.0, temperature=1.0)[0].unsqueeze(0)
         y = torch.concat([prompts, samples], dim=1)
-        print("y after shape:",y.shape)
 
         stop = False
         for idx in range(1, 1500):

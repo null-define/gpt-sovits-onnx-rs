@@ -9,7 +9,7 @@ use ort::{
 
 use crate::error::GSVError;
 
-pub fn create_onnx_cpu_session<P: AsRef<Path>>(path: P) -> Result<Session, GSVError>{
+pub fn create_onnx_cpu_session<P: AsRef<Path>>(path: P) -> Result<Session, GSVError> {
     Ok(Session::builder()?
         .with_execution_providers([CPUExecutionProvider::default()
             .with_arena_allocator(true)

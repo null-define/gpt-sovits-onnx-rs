@@ -3,7 +3,8 @@ use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
 use log::{debug, info, warn};
 use ndarray::{
-    Array, Array1, Array2, ArrayBase, ArrayD, Axis, DimMax, IxDyn, OwnedRepr, Slice, concatenate, s,
+    Array, Array1, Array2, ArrayBase, ArrayD, ArrayView1, ArrayView2, Axis, DimMax, IxDyn,
+    OwnedRepr, Slice, concatenate, s,
 };
 use ort::{
     execution_providers::CPUExecutionProvider,
@@ -24,11 +25,10 @@ mod text;
 use onnx_builder::create_onnx_cpu_session;
 pub use text::LangId;
 
-use crate::{
-    audio_filter::{AudioFilterPluginSystem, HighPassPass, ReverbPass},
-    logits_sampler::LogitsSampler,
-    text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW},
-};
+use audio_filter::{AudioFilterPluginSystem, HighPassPass, ReverbPass};
+use logits_sampler::LogitsSampler;
+use text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW};
+
 pub use error::GSVError;
 pub use logits_sampler::{SamplingParams, SamplingParamsBuilder};
 
@@ -228,11 +228,13 @@ impl TTSModel {
     ) -> Result<ArrayBase<OwnedRepr<i64>, IxDyn>, GSVError> {
         let mut idx = 1;
         let mut valid_len = initial_valid_len;
+        y_vec.reserve(1024);
 
         loop {
             // --- 1. Prepare inputs using views of the valid cache portion ---
+            // let time = SystemTime::now();
             let mut inputs = inputs![
-                "iy" => Tensor::from_array(Array2::from_shape_vec((1, y_vec.len()), y_vec.clone())?).unwrap(),
+                "iy" => TensorRef::from_array_view(unsafe {ArrayView2::from_shape_ptr((1, y_vec.len()), y_vec.as_ptr())}).unwrap(),
                 "iy_emb" => TensorRef::from_array_view(&y_emb).unwrap(),
                 "x_example" => TensorRef::from_array_view(&x_example).unwrap()
             ];
@@ -251,21 +253,18 @@ impl TTSModel {
                     TensorRef::from_array_view(v_view)?.into(),
                 ));
             }
-
             // --- 2. Run the decoder model for one step ---
-            let output = self.t2s_s_decoder.run(inputs)?;
+            let mut output = self.t2s_s_decoder.run(inputs)?;
 
-            let logits = output["logits"].try_extract_array::<f32>()?.into_owned();
-            let (logits, _) = logits.into_raw_vec_and_offset();
-            if idx <= 10 {
-                let sampling_rst =
-                    sampler.sample(logits, &y_vec, &sampling_param, &[T2S_DECODER_EOS]);
-                // debug!("sampled token {}", sampling_rst);
-                y_vec.push(sampling_rst);
-            } else {
-                let sampling_rst = sampler.sample(logits, &y_vec, &sampling_param, &[]);
-                y_vec.push(sampling_rst);
-            }
+            let mut logits = output["logits"].try_extract_array_mut::<f32>()?;
+            let (logits) = logits.as_slice_mut().unwrap();
+
+            y_vec.push(sampler.sample(
+                logits,
+                &y_vec,
+                &sampling_param,
+                if idx <= 10 { &[T2S_DECODER_EOS] } else { &[] },
+            ));
             y_emb = output["y_emb"].try_extract_array::<f32>()?.into_owned();
 
             // --- 3. Check for reallocation and update caches ---
@@ -327,14 +326,13 @@ impl TTSModel {
 
             // --- 4. Update valid length and check stop condition ---
             valid_len = new_valid_len;
-            // debug!("y_vec : {:?}", y_vec);
 
             if (y_vec.len() >= 1500
                 || (y_vec.len() - prefix_len) > EARLY_STOP_NUM
                 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS))
             {
                 let sliced = y_vec
-                    .split_off(y_vec.len() - idx)
+                    .split_off(y_vec.len() - idx - 1)
                     .into_iter()
                     .map(|i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .collect::<Vec<i64>>();
@@ -475,14 +473,14 @@ impl TTSModel {
                 k_caches.push(k_large);
                 v_caches.push(v_large);
             }
-            let (logits_vec, _) = logits.into_raw_vec_and_offset();
+            let (mut logits_vec, _) = logits.into_raw_vec_and_offset();
             let sampling_rst = sampler.sample(
-                logits_vec,
+                &mut logits_vec,
                 &y_vec,
                 &sampling_param,
                 &[T2S_DECODER_EOS], // avoid breath
             );
-            debug!("sampled token {}", sampling_rst);
+            // debug!("sampled token {}", sampling_rst);
             y_vec.push(sampling_rst);
             (y_vec, y_emb, x_example, k_caches, v_caches, initial_seq_len)
         };
@@ -494,8 +492,8 @@ impl TTSModel {
             y_vec,
             y_emb,
             x_example,
-            k_caches.clone(),
-            v_caches.clone(),
+            k_caches,
+            v_caches,
             prefix_len,
             initial_seq_len,
         )?;

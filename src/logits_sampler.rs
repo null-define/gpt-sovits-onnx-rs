@@ -1,6 +1,6 @@
 use rand::distr::{Distribution, weighted::WeightedIndex};
-use rand::rngs::ThreadRng;
 use rand::rng;
+use rand::rngs::ThreadRng;
 use std::collections::HashSet;
 
 // Sampling parameters
@@ -75,13 +75,16 @@ pub struct LogitsSampler {
 
 impl LogitsSampler {
     pub fn new() -> Self {
-        LogitsSampler {
-            rng: rng(),
-        }
+        LogitsSampler { rng: rng() }
     }
 
     // Apply repetition penalty to logits based on previous tokens
-    fn apply_repetition_penalty(&self, logits: &mut [f32], prev_tokens: &[i64], repetition_penalty: f32) {
+    fn apply_repetition_penalty(
+        &self,
+        logits: &mut [f32],
+        prev_tokens: &[i64],
+        repetition_penalty: f32,
+    ) {
         if repetition_penalty != 1.0 {
             let repeated_tokens: HashSet<i64> = prev_tokens.iter().copied().collect();
             for (i, logit) in logits.iter_mut().enumerate() {
@@ -117,14 +120,24 @@ impl LogitsSampler {
     }
 
     // Combined top-k and top-p sampling
-    fn filter_indices(&self, probs: &[f32], top_k: Option<usize>, top_p: Option<f32>, avoid_tokens: &[i64]) -> Vec<usize> {
+    fn filter_indices(
+        &self,
+        probs: &[f32],
+        top_k: Option<usize>,
+        top_p: Option<f32>,
+        avoid_tokens: &[i64],
+    ) -> Vec<usize> {
         let avoid_set: HashSet<i64> = avoid_tokens.iter().copied().collect();
         let mut indices: Vec<usize> = (0..probs.len())
             .filter(|&i| !avoid_set.contains(&(i as i64)))
             .collect();
 
         // Sort indices by probability in descending order
-        indices.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap_or(std::cmp::Ordering::Equal));
+        indices.sort_unstable_by(|&a, &b| {
+            probs[b]
+                .partial_cmp(&probs[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Apply top-k if specified
         let k = top_k.unwrap_or(indices.len());
@@ -160,12 +173,18 @@ impl LogitsSampler {
     }
 
     // Sample a token with provided parameters
-    pub fn sample(&mut self, mut logits: Vec<f32>, prev_tokens: &[i64], params: &SamplingParams, avoid_tokens: &[i64]) -> i64 {
+    pub fn sample(
+        &mut self,
+        logits: &mut [f32],
+        prev_tokens: &[i64],
+        params: &SamplingParams,
+        avoid_tokens: &[i64],
+    ) -> i64 {
         // Apply repetition penalty
-        self.apply_repetition_penalty(&mut logits, prev_tokens, params.repetition_penalty);
+        self.apply_repetition_penalty(logits, prev_tokens, params.repetition_penalty);
 
         // Apply temperature
-        self.apply_temperature(&mut logits, params.temperature);
+        self.apply_temperature(logits, params.temperature);
 
         // Compute probabilities
         let mut probs = Vec::with_capacity(logits.len());
@@ -173,12 +192,14 @@ impl LogitsSampler {
 
         // Check if either top_k or top_p is specified
         if params.top_k.is_some() || params.top_p.is_some() {
-            let filtered_indices = self.filter_indices(&probs, params.top_k, params.top_p, avoid_tokens);
+            let filtered_indices =
+                self.filter_indices(&probs, params.top_k, params.top_p, avoid_tokens);
             if filtered_indices.is_empty() {
                 return self.argmax(&probs, avoid_tokens) as i64;
             }
             let filtered_probs: Vec<f32> = filtered_indices.iter().map(|&i| probs[i]).collect();
-            let dist = WeightedIndex::new(&filtered_probs).expect("Invalid probability distribution");
+            let dist =
+                WeightedIndex::new(&filtered_probs).expect("Invalid probability distribution");
             filtered_indices[dist.sample(&mut self.rng)] as i64
         } else {
             self.argmax(&probs, avoid_tokens) as i64
