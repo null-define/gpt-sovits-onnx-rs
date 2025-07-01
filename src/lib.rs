@@ -17,6 +17,7 @@ use std::{fs::File, path::Path};
 use tokio::task::block_in_place;
 
 mod audio_filter;
+mod cpu_info;
 mod error;
 mod logits_sampler;
 mod onnx_builder;
