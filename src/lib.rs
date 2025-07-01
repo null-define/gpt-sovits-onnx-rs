@@ -16,7 +16,6 @@ use std::time::SystemTime;
 use std::{fs::File, path::Path};
 use tokio::task::block_in_place;
 
-mod audio_filter;
 mod cpu_info;
 mod error;
 mod logits_sampler;
@@ -26,16 +25,13 @@ mod text;
 use onnx_builder::create_onnx_cpu_session;
 pub use text::LangId;
 
-use audio_filter::{AudioFilterPluginSystem, HighPassPass, ReverbPass};
 use logits_sampler::LogitsSampler;
 use text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW};
 
 pub use error::GSVError;
 pub use logits_sampler::{SamplingParams, SamplingParamsBuilder};
 
-const EARLY_STOP_NUM: usize = 1500;
 const T2S_DECODER_EOS: i64 = 1024;
-const CUT_LEN: usize = 32;
 
 type KvDType = f32;
 
@@ -56,7 +52,6 @@ pub struct TTSModel {
     t2s_s_decoder: Session,
     ref_data: Option<ReferenceData>,
     num_layers: usize,
-    audio_filter: AudioFilterPluginSystem,
     output_spec: WavSpec,
 }
 
@@ -103,11 +98,6 @@ impl TTSModel {
             sample_format: hound::SampleFormat::Float,
         };
 
-        let mut audio_filter = AudioFilterPluginSystem::new(output_spec);
-
-        audio_filter.add_pass(Box::new(HighPassPass::new(output_spec.sample_rate, 128.0)));
-        audio_filter.add_pass(Box::new(ReverbPass::new(output_spec.sample_rate)));
-
         Ok(TTSModel {
             text_processor: TextProcessor::new(
                 G2PW::new(g2pw_path)?,
@@ -121,7 +111,6 @@ impl TTSModel {
             t2s_s_decoder: create_onnx_cpu_session(t2s_s_decoder_path)?,
             ref_data: None,
             num_layers,
-            audio_filter,
             output_spec,
         })
     }
@@ -229,7 +218,7 @@ impl TTSModel {
     ) -> Result<ArrayBase<OwnedRepr<i64>, IxDyn>, GSVError> {
         let mut idx = 1;
         let mut valid_len = initial_valid_len;
-        y_vec.reserve(1024);
+        y_vec.reserve(2048);
 
         loop {
             // --- 1. Prepare inputs using views of the valid cache portion ---
@@ -264,7 +253,11 @@ impl TTSModel {
                 logits,
                 &y_vec,
                 &sampling_param,
-                if idx <= 10 { &[T2S_DECODER_EOS] } else { &[] },
+                if idx <= 10 {
+                    &[0, T2S_DECODER_EOS]
+                } else {
+                    &[]
+                },
             ));
             y_emb = output["y_emb"].try_extract_array::<f32>()?.into_owned();
 
@@ -328,12 +321,9 @@ impl TTSModel {
             // --- 4. Update valid length and check stop condition ---
             valid_len = new_valid_len;
 
-            if (y_vec.len() >= 1500
-                || (y_vec.len() - prefix_len) > EARLY_STOP_NUM
-                || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS))
-            {
+            if (idx >= 1500 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS)) {
                 let sliced = y_vec
-                    .split_off(y_vec.len() - idx - 1)
+                    .split_off(prefix_len)
                     .into_iter()
                     .map(|i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .collect::<Vec<i64>>();
@@ -479,7 +469,7 @@ impl TTSModel {
                 &mut logits_vec,
                 &y_vec,
                 &sampling_param,
-                &[T2S_DECODER_EOS], // avoid breath
+                &[0, T2S_DECODER_EOS], // avoid breath
             );
             // debug!("sampled token {}", sampling_rst);
             y_vec.push(sampling_rst);
@@ -508,16 +498,11 @@ impl TTSModel {
         ])?;
         debug!("SoVITS time: {:?}", time.elapsed()?);
         let output_audio = outputs["audio"].try_extract_array::<f32>()?;
-        let mut audio = output_audio
-            .slice(s![CUT_LEN..output_audio.shape()[0] - CUT_LEN])
-            .into_owned()
-            .into_raw_vec();
+        let mut audio = output_audio.into_owned().into_raw_vec();
 
         for sample in &mut audio {
             *sample = *sample * 4.0;
         }
-
-        self.audio_filter.process_buffer(&mut audio);
 
         Ok(audio)
     }
@@ -548,7 +533,7 @@ impl TTSModel {
 
 fn ensure_punctuation(text: &str) -> String {
     if !text.ends_with(['。', '.']) {
-        text.to_string() + "."
+        text.to_string() + "。"
     } else {
         text.to_string()
     }

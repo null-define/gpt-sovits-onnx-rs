@@ -10,13 +10,16 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer
 from module.models_onnx import SynthesizerTrn, symbols_v1, symbols_v2
 from AR.models.t2s_lightning_module_onnx import Text2SemanticLightningModule
 import argparse
+from torch import Tensor
 
 from AR.models.t2s_model_onnx import sample
 
 EOS = 1024
 
-def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False):
-    hann_window = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
+def spectrogram_torch(
+    hann_window: Tensor, y: Tensor, n_fft: int, sampling_rate: int, hop_size: int, win_size: int, center: bool = False
+):
+    # hann_window = torch.hann_window(win_size, device=y.device, dtype=y.dtype)
     y = torch.nn.functional.pad(
         y.unsqueeze(1),
         (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
@@ -37,6 +40,7 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
     )
     spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
     return spec
+
 
 class DictToAttrRecursive(dict):
     def __init__(self, input_dict):
@@ -209,9 +213,14 @@ class VitsModel(nn.Module):
         )
         self.vq_model.eval()
         self.vq_model.load_state_dict(dict_s2["weight"], strict=False)
+        self.vq_model.dec.remove_weight_norm()
+        self.hann_window = torch.hann_window(
+            self.hps.data.win_length, dtype=torch.float32
+        )
         
     def forward(self, text_seq, pred_semantic, ref_audio):
         refer = spectrogram_torch(
+            self.hann_window,
             ref_audio,
             self.hps.data.filter_length,
             self.hps.data.sampling_rate,

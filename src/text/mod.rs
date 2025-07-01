@@ -191,36 +191,49 @@ impl TextProcessor {
     }
 }
 
-/// Splits text into chunks based on punctuation.
-pub fn split_text(text: &str, _max_chunk_size: usize) -> Vec<String> {
+pub fn split_text(text: &str, max_chunk_size: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![];
     }
-
-    let re = Regex::new(r"[。.?！!；;\n]").unwrap();
+    debug!("split before: {:?}", text);
+    let re = Regex::new(r"([。.?！!；;\n])").unwrap(); // Capture punctuation
     let mut chunks = Vec::new();
     let mut current_chunk = String::new();
+    let mut last_end = 0;
 
-    for segment in re.split(text) {
+    // Iterate through matches to include punctuation in chunks
+    for mat in re.find_iter(text) {
+        let segment = &text[last_end..mat.start()];
+        let punct = mat.as_str();
         current_chunk.push_str(segment);
-        if re.is_match(segment) {
+        current_chunk.push_str(punct);
+
+        // Check if chunk exceeds max_chunk_size or ends with punctuation
+        if current_chunk.len() >= max_chunk_size {
             let trimmed = current_chunk.trim();
             if !trimmed.is_empty() {
                 chunks.push(trimmed.to_string());
             }
             current_chunk.clear();
+        } else if !current_chunk.trim().is_empty() {
+            chunks.push(current_chunk.trim().to_string());
+            current_chunk.clear();
+        }
+
+        last_end = mat.end();
+    }
+
+    // Handle any remaining text after the last punctuation
+    if last_end < text.len() {
+        current_chunk.push_str(&text[last_end..]);
+        let trimmed = current_chunk.trim();
+        if !trimmed.is_empty() {
+            chunks.push(trimmed.to_string());
         }
     }
 
-    if !current_chunk.trim().is_empty() {
-        chunks.push(current_chunk.trim().to_string());
-    }
     debug!("chunks {:?}", chunks);
     chunks
-}
-
-fn is_punctuation(c: char) -> bool {
-    ['。', '.', '?', '？', '!', '！', ';', '；', '\n'].contains(&c)
 }
 
 fn parse_punctuation(p: &str) -> Option<&'static str> {
