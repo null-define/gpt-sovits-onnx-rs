@@ -35,7 +35,7 @@
 * **源代码**: [gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master)
 * **演示视频**:
 
-    https://github.com/user-attachments/assets/369cefb6-3dab-4db4-9bb1-647f526f27d0
+https://github.com/user-attachments/assets/03565b5f-a3e4-4689-83c5-7ed72b6acf86
 
 > **注意**：演示机型为 iQOO 13。实际推理时间在不同 SoC 和设备上可能存在显著差异。
 
