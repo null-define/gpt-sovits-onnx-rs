@@ -22,9 +22,8 @@
 
 2025-06-30: 提取sampler到rust层，并更新了模型转换脚本和demo模型，如果提示找不到输出，请更新模型。
 
-* **输出稳定性不足**：存在偶发性的音频提前截断等问题，将在后续版本中逐步修复。
+* **输出稳定性不足**：存在偶发性的音频提前截断等问题，我已经不确定是模型问题还是库的问题了，后续尝试重新训练模型看看。
 * **性能仍在优化中**：详细性能数据请参考 [**性能记录 (perf\_record)**](doc/perf_record.md)。
-* **英文gp2en仍在优化**: 引入了g2pen模型支持，改善了中英文混合、英文TTS的效果，但是效果似乎和耗时不如默认方式稳定，仍在优化中, 使用方法详见【模型下载】部分
 * **尝试引入粤语支持**: 通过在运行时设置lang_id为LangId::AutoYue，可以启用粤语模式。注意，这个API仍在实验中，粤语的效果不确定是否正常（因为我不会粤语），可能后续会有所更改。
 
 -----
@@ -71,12 +70,12 @@
 
 如果您不想自行训练和导出模型，可以使用预训练模型进行快速体验。
 
-* **下载地址**：[huggingface.co/mikv39/gpt-sovits-onnx-custom](https://huggingface.co/mikv39/gpt-sovits-onnx-custom)
+* **主模型下载地址**：[huggingface.co/mikv39/gpt-sovits-onnx-custom](https://huggingface.co/mikv39/gpt-sovits-onnx-custom)
 * 该模型可直接在 [gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master) 中加载使用，或者直接替换examples下的gpt_sovits_demo中的模型地址。
 
 > **版权声明**：此模型使用了受版权保护的音视频素材进行微调，请勿用于任何商业用途。
 
-**gp2en模型下载** 参见[cisco-ai/mini-bart-g2p](https://huggingface.co/cisco-ai/mini-bart-g2p/tree/main/onnx),下载完成后可以把模型目录文件夹设置为TTSModel的g2p_en_path参数，启用gp2 en模型支持。
+**gp2en模型下载** 建议下载，参见[cisco-ai/mini-bart-g2p](https://huggingface.co/cisco-ai/mini-bart-g2p/tree/main/onnx),下载完成后可以把模型目录文件夹设置为TTSModel的g2p_en_path参数，启用gp2 en模型支持。默认的demo和JNI都启用了gp2 en模型，需要在原来的目录下新建一个g2p_en文件夹，把下载的模型放进去。
 
 
 -----

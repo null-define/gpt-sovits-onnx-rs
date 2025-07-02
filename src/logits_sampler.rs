@@ -1,15 +1,16 @@
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::rng;
 use rand::rngs::ThreadRng;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
-// Sampling parameters
-#[derive(Clone, Copy)]
+// Sampling parameters (unchanged)
+#[derive(Clone, Copy, Debug)]
 pub struct SamplingParams {
-    pub temperature: f32,        // Temperature for softmax scaling
-    pub top_k: Option<usize>,    // Top-k sampling
-    pub top_p: Option<f32>,      // Top-p (nucleus) sampling
-    pub repetition_penalty: f32, // Penalty for repeated tokens
+    pub temperature: f32,
+    pub top_k: Option<usize>,
+    pub top_p: Option<f32>,
+    pub repetition_penalty: f32,
 }
 
 // Builder for SamplingParams (unchanged)
@@ -31,11 +32,7 @@ impl SamplingParamsBuilder {
     }
 
     pub fn temperature(mut self, temperature: f32) -> Self {
-        if temperature >= 0.0 {
-            self.temperature = temperature;
-        } else {
-            self.temperature = 1.0;
-        }
+        self.temperature = if temperature >= 0.0 { temperature } else { 1.0 };
         self
     }
 
@@ -50,11 +47,11 @@ impl SamplingParamsBuilder {
     }
 
     pub fn repetition_penalty(mut self, repetition_penalty: f32) -> Self {
-        if repetition_penalty > 0.0 {
-            self.repetition_penalty = repetition_penalty;
+        self.repetition_penalty = if repetition_penalty > 0.0 {
+            repetition_penalty
         } else {
-            self.repetition_penalty = 1.0;
-        }
+            1.0
+        };
         self
     }
 
@@ -68,36 +65,46 @@ impl SamplingParamsBuilder {
     }
 }
 
-// Logits sampler struct
-pub struct LogitsSampler {
+/// Processes logits to sample a token ID, applying various strategies
+/// like temperature, repetition penalty, and Top-K/Top-P sampling.
+pub struct Sampler {
     rng: ThreadRng,
+    /// Reusable buffer for probabilities to avoid re-allocation in the sampling loop.
+    probs: Vec<f32>,
 }
 
-impl LogitsSampler {
-    pub fn new() -> Self {
-        LogitsSampler { rng: rng() }
+impl Sampler {
+    /// Creates a new Sampler.
+    ///
+    /// # Arguments
+    /// * `vocab_size`: The size of the vocabulary, used to pre-allocate buffers for efficiency.
+    pub fn new(vocab_size: usize) -> Self {
+        Sampler {
+            rng: rng(),
+            probs: Vec::with_capacity(vocab_size),
+        }
     }
 
-    // Apply repetition penalty to logits based on previous tokens
-    fn apply_repetition_penalty(
-        &self,
-        logits: &mut [f32],
-        prev_tokens: &[i64],
-        repetition_penalty: f32,
-    ) {
-        if repetition_penalty != 1.0 {
-            let repeated_tokens: HashSet<i64> = prev_tokens.iter().copied().collect();
-            for (i, logit) in logits.iter_mut().enumerate() {
-                if repeated_tokens.contains(&(i as i64)) {
-                    *logit /= repetition_penalty;
+    /// Applies a penalty to the logits of repeated tokens.
+    fn apply_repetition_penalty(logits: &mut [f32], prev_tokens: &[i64], penalty: f32) {
+        if penalty == 1.0 {
+            return;
+        }
+        let prev_tokens_set: HashSet<_> = prev_tokens.iter().copied().collect();
+        for (token_id, logit) in logits.iter_mut().enumerate() {
+            if prev_tokens_set.contains(&(token_id as i64)) {
+                if *logit >= 0.0 {
+                    *logit /= penalty;
+                } else {
+                    *logit *= penalty;
                 }
             }
         }
     }
 
-    // Apply temperature to logits
-    fn apply_temperature(&self, logits: &mut [f32], temperature: f32) {
-        if temperature != 1.0 && temperature != 0.0 {
+    /// Applies temperature scaling to the logits.
+    fn apply_temperature(logits: &mut [f32], temperature: f32) {
+        if temperature > 0.0 {
             let inv_temp = 1.0 / temperature;
             for logit in logits.iter_mut() {
                 *logit *= inv_temp;
@@ -105,74 +112,45 @@ impl LogitsSampler {
         }
     }
 
-    // Compute softmax probabilities
-    fn softmax(&self, logits: &[f32], probs: &mut Vec<f32>) {
-        probs.clear();
+    /// Computes the softmax of logits and stores the result in the internal `probs` buffer.
+    fn softmax(&mut self, logits: &[f32]) {
+        self.probs.clear();
+        if logits.is_empty() {
+            return;
+        }
+
         let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
         let mut sum_exp = 0.0;
-        probs.extend(logits.iter().map(|&x| {
-            let exp_val = (x - max_logit).exp();
+        self.probs.extend(logits.iter().map(|&logit| {
+            let exp_val = (logit - max_logit).exp();
             sum_exp += exp_val;
             exp_val
         }));
-        let inv_sum = 1.0 / sum_exp;
-        probs.iter_mut().for_each(|p| *p *= inv_sum);
-    }
 
-    // Combined top-k and top-p sampling
-    fn filter_indices(
-        &self,
-        probs: &[f32],
-        top_k: Option<usize>,
-        top_p: Option<f32>,
-        avoid_tokens: &[i64],
-    ) -> Vec<usize> {
-        let avoid_set: HashSet<i64> = avoid_tokens.iter().copied().collect();
-        let mut indices: Vec<usize> = (0..probs.len())
-            .filter(|&i| !avoid_set.contains(&(i as i64)))
-            .collect();
-
-        // Sort indices by probability in descending order
-        indices.sort_unstable_by(|&a, &b| {
-            probs[b]
-                .partial_cmp(&probs[a])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Apply top-k if specified
-        let k = top_k.unwrap_or(indices.len());
-        indices.truncate(k);
-
-        // Apply top-p if specified
-        if let Some(p) = top_p {
-            let mut cumsum = 0.0;
-            indices.retain(|&i| {
-                cumsum += probs[i];
-                cumsum <= p
-            });
+        if sum_exp > 0.0 {
+            let inv_sum_exp = 1.0 / sum_exp;
+            for prob in self.probs.iter_mut() {
+                *prob *= inv_sum_exp;
+            }
         }
-
-        indices
     }
 
-    // Argmax sampling with avoidance of specified tokens
-    fn argmax(&self, probs: &[f32], avoid_tokens: &[i64]) -> usize {
-        let avoid_set: HashSet<i64> = avoid_tokens.iter().copied().collect();
+    /// Finds the token with the highest logit value (argmax).
+    fn argmax(logits: &[f32], avoid_set: &HashSet<i64>) -> i64 {
+        let mut max_logit = f32::NEG_INFINITY;
         let mut max_idx = 0;
-        let mut max_prob = f32::NEG_INFINITY;
-        for (i, &prob) in probs.iter().enumerate() {
-            if avoid_set.contains(&(i as i64)) {
-                continue;
-            }
-            if prob > max_prob {
-                max_prob = prob;
-                max_idx = i;
+
+        for (idx, &logit) in logits.iter().enumerate() {
+            if !avoid_set.contains(&(idx as i64)) && logit > max_logit {
+                max_logit = logit;
+                max_idx = idx;
             }
         }
-        max_idx
+        max_idx as i64
     }
 
-    // Sample a token with provided parameters
+    /// Main sampling method with performance optimizations.
     pub fn sample(
         &mut self,
         logits: &mut [f32],
@@ -180,29 +158,72 @@ impl LogitsSampler {
         params: &SamplingParams,
         avoid_tokens: &[i64],
     ) -> i64 {
-        // Apply repetition penalty
-        self.apply_repetition_penalty(logits, prev_tokens, params.repetition_penalty);
+        Self::apply_repetition_penalty(logits, prev_tokens, params.repetition_penalty);
 
-        // Apply temperature
-        self.apply_temperature(logits, params.temperature);
+        let avoid_set: HashSet<_> = avoid_tokens.iter().copied().collect();
 
-        // Compute probabilities
-        let mut probs = Vec::with_capacity(logits.len());
-        self.softmax(&logits, &mut probs);
-
-        // Check if either top_k or top_p is specified
-        if params.top_k.is_some() || params.top_p.is_some() {
-            let filtered_indices =
-                self.filter_indices(&probs, params.top_k, params.top_p, avoid_tokens);
-            if filtered_indices.is_empty() {
-                return self.argmax(&probs, avoid_tokens) as i64;
-            }
-            let filtered_probs: Vec<f32> = filtered_indices.iter().map(|&i| probs[i]).collect();
-            let dist =
-                WeightedIndex::new(&filtered_probs).expect("Invalid probability distribution");
-            filtered_indices[dist.sample(&mut self.rng)] as i64
-        } else {
-            self.argmax(&probs, avoid_tokens) as i64
+        // Optimized path for greedy decoding (argmax).
+        if params.temperature == 0.0 {
+            return Self::argmax(logits, &avoid_set);
         }
+
+        Self::apply_temperature(logits, params.temperature);
+        self.softmax(logits);
+
+        let mut candidates: Vec<(usize, f32)> = self
+            .probs
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(idx, prob)| !avoid_set.contains(&(*idx as i64)) && *prob > 0.0)
+            .collect();
+
+        if candidates.is_empty() {
+            return Self::argmax(logits, &avoid_set);
+        }
+
+        // --- Top-K Filtering (Optimized O(V) selection) ---
+        if let Some(k) = params.top_k {
+            if k > 0 && k < candidates.len() {
+                candidates.select_nth_unstable_by(k - 1, |a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
+                });
+                candidates.truncate(k);
+            }
+        }
+
+        // --- Top-P (Nucleus) Filtering (on at most K candidates) ---
+        if let Some(p) = params.top_p {
+            if p < 1.0 {
+                candidates
+                    .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+                let mut cum_prob = 0.0;
+                let mut cutoff = candidates.len();
+                for (i, &(_, prob)) in candidates.iter().enumerate() {
+                    cum_prob += prob;
+                    if cum_prob >= p {
+                        cutoff = i + 1;
+                        break;
+                    }
+                }
+                candidates.truncate(cutoff);
+            }
+        }
+
+        // --- Final Sampling ---
+        let weights = candidates.iter().map(|&(_, p)| p);
+        let dist = match WeightedIndex::new(weights) {
+            Ok(d) => d,
+            Err(_) => {
+                // Fallback if distribution fails (e.g., all probs are 0 after filtering).
+                // Return the highest probability candidate before this step.
+                return candidates
+                    .first()
+                    .map_or_else(|| Self::argmax(logits, &avoid_set), |&(idx, _)| idx as i64);
+            }
+        };
+
+        let sampled_candidate_index = dist.sample(&mut self.rng);
+        candidates[sampled_candidate_index].0 as i64
     }
 }

@@ -1,6 +1,5 @@
 use log::debug;
 use regex::Regex;
-use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::text::zh::jyutping_list::get_jyutping_list;

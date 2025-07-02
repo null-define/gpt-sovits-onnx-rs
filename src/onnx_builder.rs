@@ -1,12 +1,10 @@
 use crate::cpu_info::get_hw_big_cores;
 use lazy_static::lazy_static;
-use std::{num::NonZero, path::Path};
+use std::path::Path;
 
 use ort::{
-    execution_providers::{CPUExecutionProvider, XNNPACKExecutionProvider},
-    inputs,
+    execution_providers::CPUExecutionProvider,
     session::{Session, builder::GraphOptimizationLevel},
-    value::TensorRef,
 };
 
 use crate::error::GSVError;

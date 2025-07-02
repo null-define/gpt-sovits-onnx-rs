@@ -1,10 +1,8 @@
 use clap::Parser;
-use futures::StreamExt;
 use gpt_sovits_onnx_rs::*;
 use hound::{WavSpec, WavWriter};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tokio::runtime::Runtime;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -66,7 +64,6 @@ fn create_model(assets_dir: &Path) -> Result<TTSModel, GSVError> {
         assets_dir.join("custom_t2s_encoder.onnx"),
         assets_dir.join("custom_t2s_fs_decoder.onnx"),
         assets_dir.join("custom_t2s_s_decoder.onnx"),
-        24,
         Some(assets_dir.join("bert.onnx")),
         Some(assets_dir.join("g2pW.onnx")),
         Some(assets_dir.join("g2p_en")), // assume you have g2p en mode downloaded, can be none

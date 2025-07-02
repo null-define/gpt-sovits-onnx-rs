@@ -1,20 +1,17 @@
 // text/en/g2p_en.rs
 use std::{
-    path::{self, Path, PathBuf},
+    path::{Path},
     str::FromStr,
-    sync::Arc,
 };
 
 use anyhow::{Ok, Result};
 use arpabet::Arpabet;
-use clap::builder::Str;
-use log::{debug, info};
-use ndarray::{Array, Array1, Array2, ArrayBase, Axis, IxDyn, OwnedRepr, Slice, s};
+use log::debug;
+use ndarray::{Array, s};
 use ort::{
-    execution_providers::CPUExecutionProvider,
     inputs,
-    session::{Session, builder::GraphOptimizationLevel},
-    value::{Tensor, TensorRef, Value},
+    session::Session,
+    value::Tensor,
 };
 use tokenizers::Tokenizer;
 
@@ -161,7 +158,7 @@ impl G2pEn {
                 let words = text.split_whitespace();
                 let mut phonemes = Vec::new();
                 for word in words {
-                    let (phones) = model.get_phoneme(word)?;
+                    let phones = model.get_phoneme(word)?;
                     phonemes.extend(phones.into_iter());
                 }
                 Ok(phonemes)

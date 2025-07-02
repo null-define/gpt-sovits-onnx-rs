@@ -3,7 +3,7 @@ use std::{path::Path, str::FromStr, sync::Arc};
 use anyhow::Ok;
 use log::{debug, warn};
 use ndarray::{Array1, Array2, Axis, concatenate};
-use ort::{inputs, session::Session, value::Tensor};
+use ort::{inputs, value::Tensor};
 use tokenizers::Tokenizer;
 
 use crate::{onnx_builder::create_onnx_cpu_session, text::utils::BERT_TOKENIZER};

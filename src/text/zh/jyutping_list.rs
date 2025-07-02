@@ -35,14 +35,14 @@ fn load_data() -> HashMap<u32, String> {
 
 pub fn get_jyutping(text: &str, tone: bool) -> String {
     if text.is_empty() {
-        return (String::new());
+        return String::new();
     }
 
     let re = Regex::new(r"[\u{4e00}-\u{9fff}]+")
         .map_err(|e| format!("Regex error: {}", e))
         .unwrap();
     if !re.is_match(text) {
-        return (text.to_string());
+        return text.to_string();
     }
 
     let dict = if tone { &*TONED } else { &*TONELESS };
@@ -62,7 +62,7 @@ pub fn get_jyutping(text: &str, tone: bool) -> String {
         .split_whitespace()
         .collect::<Vec<&str>>()
         .join(" ");
-    (result)
+    result
 }
 
 pub fn get_jyutping_list(text: &str) -> Vec<(String, String)> {

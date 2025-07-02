@@ -1,10 +1,8 @@
 use ndarray::Array;
-use ort::session::Session;
 use ort::value::Tensor;
 use std::{
-    collections::HashMap,
     fmt::Debug,
-    path::{Path, PathBuf},
+    path::Path,
     str::FromStr,
     sync::Arc,
 };

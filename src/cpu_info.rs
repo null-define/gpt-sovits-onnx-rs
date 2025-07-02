@@ -1,10 +1,8 @@
-use log::info;
 use std::fs;
 use std::io;
-use std::thread;
 
 pub fn get_hw_cpu_ids_and_freqs() -> io::Result<Vec<(usize, u64)>> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mut cpu_info: Vec<(usize, u64)> = Vec::new();
         let mut seen_siblings: Vec<String> = Vec::new();
@@ -42,12 +40,12 @@ pub fn get_hw_cpu_ids_and_freqs() -> io::Result<Vec<(usize, u64)>> {
 
         // Sort by frequency (descending) and CPU ID (ascending)
         cpu_info.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        info!("got cpu infos: {:?}", cpu_info);
         Ok(cpu_info)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
+        use std::thread;
         // On non-Linux platforms, return CPU IDs in natural order with frequency 0
         let num_cpus = thread::available_parallelism()?.get();
         Ok((0..num_cpus).map(|id| (id, 0)).collect())
@@ -57,7 +55,7 @@ pub fn get_hw_cpu_ids_and_freqs() -> io::Result<Vec<(usize, u64)>> {
 pub fn get_hw_big_cores() -> io::Result<Vec<(usize, u64)>> {
     let cpu_info = get_hw_cpu_ids_and_freqs()?;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         if cpu_info.is_empty() {
             return Err(io::Error::new(
@@ -71,8 +69,8 @@ pub fn get_hw_big_cores() -> io::Result<Vec<(usize, u64)>> {
         }
 
         // Find the frequency threshold for big cores (e.g., highest frequency group)
-        let bug_core_freq = cpu_info[3].1;
-        if bug_core_freq == 0 {
+        let big_core_freq = cpu_info[3].1;
+        if big_core_freq == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Frequency information unavailable",
@@ -82,13 +80,12 @@ pub fn get_hw_big_cores() -> io::Result<Vec<(usize, u64)>> {
         // Collect cores with high frequency (assume big cores have the highest frequency)
         let big_cores: Vec<(usize, u64)> = cpu_info
             .into_iter()
-            .filter(|&(_, freq)| freq >= bug_core_freq) // Big cores have the highest frequency
+            .filter(|&(_, freq)| freq >= big_core_freq) // Big cores have the highest frequency
             .collect();
-        info!("using big cores: {:?}", big_cores);
         Ok(big_cores)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
         // Non-Linux platforms: frequency is 0, cannot reliably identify big cores
         Err(io::Error::new(

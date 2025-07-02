@@ -32,13 +32,13 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
     mut env: JNIEnv,
     _class: JClass,
     g2p_w_path: JString,
+    g2p_en_path: JString,
     vits_path: JString,
     ssl_path: JString,
     t2s_encoder_path: JString,
     t2s_fs_decoder_path: JString,
     t2s_s_decoder_path: JString,
     bert_path: JString,
-    max_length: jlong,
 ) -> jlong {
     init_logging();
     // Convert JString to Rust String with error handling
@@ -48,6 +48,17 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
             env.throw_new(
                 "java/lang/IllegalArgumentException",
                 format!("Couldn't get g2pW path: {}", e),
+            )
+            .expect("Failed to throw exception");
+            return 0;
+        }
+    };
+    let g2p_en: String = match env.get_string(&g2p_en_path) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Couldn't get g2p_en path: {}", e),
             )
             .expect("Failed to throw exception");
             return 0;
@@ -121,29 +132,15 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_initModel
         }
     };
 
-    // Convert max_length from jlong to usize
-    let max_length_usize = match max_length.try_into() {
-        Ok(val) => val,
-        Err(_) => {
-            env.throw_new(
-                "java/lang/IllegalArgumentException",
-                "Invalid max_length value",
-            )
-            .expect("Failed to throw exception");
-            return 0;
-        }
-    };
-
     match TTSModel::new(
         Path::new(&vits),
         Path::new(&ssl),
         Path::new(&t2s_encoder),
         Path::new(&t2s_fs_decoder),
         Path::new(&t2s_s_decoder),
-        max_length_usize,
         Some(Path::new(&bert)),
         Some(Path::new(&g2p_w)),
-        None,
+        Some(Path::new(&g2p_en)),
     ) {
         Ok(model) => Box::into_raw(Box::new(model)) as jlong,
         Err(e) => {
@@ -164,6 +161,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_processRe
     model_handle: jlong,
     ref_audio_path: JString,
     ref_text: JString,
+    language: jlong,
 ) -> jboolean {
     let model: &mut TTSModel = unsafe { &mut *(model_handle as *mut TTSModel) };
     let ref_audio: String = match env.get_string(&ref_audio_path) {
@@ -189,7 +187,13 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_processRe
         }
     };
 
-    match model.process_reference_sync(Path::new(&ref_audio), &ref_text, LangId::Auto) {
+    let lang_id = if language == 0 {
+        LangId::Auto
+    } else {
+        LangId::AutoYue
+    };
+
+    match model.process_reference_sync(Path::new(&ref_audio), &ref_text, lang_id) {
         Ok(_) => JNI_TRUE,
         Err(e) => {
             env.throw_new(
@@ -208,6 +212,7 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInfere
     _class: JClass,
     model_handle: jlong,
     text: JString,
+    language: jlong,
 ) -> jfloatArray {
     let model: &mut TTSModel = unsafe { &mut *(model_handle as *mut TTSModel) };
     let text: String = match env.get_string(&text) {
@@ -222,10 +227,17 @@ pub extern "system" fn Java_com_example_gpt_1sovits_1demo_MainActivity_runInfere
         }
     };
 
+    
+    let lang_id = if language == 0 {
+        LangId::Auto
+    } else {
+        LangId::AutoYue
+    };
+
     match model.synthesize_sync(
         &text,
         SamplingParamsBuilder::new().top_k(5).top_p(1.0).build(),
-        LangId::Auto,
+        lang_id,
     ) {
         Ok((_, samples_vec)) => {
             // Fix deprecated into_raw_vec

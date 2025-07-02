@@ -1,16 +1,15 @@
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
-use log::{debug, info, warn};
+use log::{debug, info};
 use ndarray::{
-    Array, Array1, Array2, ArrayBase, ArrayD, ArrayView1, ArrayView2, Axis, DimMax, IxDyn,
-    OwnedRepr, Slice, concatenate, s,
+    Array, Array2, ArrayBase, ArrayD, ArrayView2, Axis, IxDyn,
+    OwnedRepr, concatenate, s,
 };
 use ort::{
-    execution_providers::CPUExecutionProvider,
     inputs,
-    session::{Session, builder::GraphOptimizationLevel},
-    value::{Tensor, TensorRef},
+    session::Session,
+    value::TensorRef,
 };
 use std::time::SystemTime;
 use std::{fs::File, path::Path};
@@ -25,13 +24,17 @@ mod text;
 use onnx_builder::create_onnx_cpu_session;
 pub use text::LangId;
 
-use logits_sampler::LogitsSampler;
+use logits_sampler::Sampler;
 use text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW};
 
 pub use error::GSVError;
 pub use logits_sampler::{SamplingParams, SamplingParamsBuilder};
 
+use crate::onnx_builder::BIG_CORES;
+
 const T2S_DECODER_EOS: i64 = 1024;
+const VOCAB_SIZE: usize = 1025;
+const NUM_LAYERS: usize = 24;
 
 type KvDType = f32;
 
@@ -73,12 +76,12 @@ impl TTSModel {
         t2s_encoder_path: P,
         t2s_fs_decoder_path: P,
         t2s_s_decoder_path: P,
-        num_layers: usize,
         bert_path: Option<P>,
         g2pw_path: Option<P>,
         g2p_en_path: Option<P>,
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
+        info!("use cpu cores: {:?}", BIG_CORES.clone());
 
         // let create_session_with_profiling = |path: P| {
         //     Session::builder()?
@@ -110,7 +113,7 @@ impl TTSModel {
             t2s_fs_decoder: create_onnx_cpu_session(t2s_fs_decoder_path)?,
             t2s_s_decoder: create_onnx_cpu_session(t2s_s_decoder_path)?,
             ref_data: None,
-            num_layers,
+            num_layers: NUM_LAYERS,
             output_spec,
         })
     }
@@ -206,7 +209,7 @@ impl TTSModel {
     /// Efficiently runs the streaming decoder loop with a pre-allocated, resizable KV cache.
     fn run_t2s_s_decoder_loop(
         &mut self,
-        sampler: &mut LogitsSampler,
+        sampler: &mut Sampler,
         sampling_param: SamplingParams,
         mut y_vec: Vec<i64>,
         mut y_emb: ArrayBase<OwnedRepr<f32>, IxDyn>,
@@ -247,7 +250,7 @@ impl TTSModel {
             let mut output = self.t2s_s_decoder.run(inputs)?;
 
             let mut logits = output["logits"].try_extract_array_mut::<f32>()?;
-            let (logits) = logits.as_slice_mut().unwrap();
+            let logits = logits.as_slice_mut().unwrap();
 
             y_vec.push(sampler.sample(
                 logits,
@@ -321,7 +324,7 @@ impl TTSModel {
             // --- 4. Update valid length and check stop condition ---
             valid_len = new_valid_len;
 
-            if (idx >= 1500 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS)) {
+            if idx >= 1500 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS) {
                 let sliced = y_vec
                     .split_off(prefix_len)
                     .into_iter()
@@ -390,7 +393,7 @@ impl TTSModel {
     ) -> Result<Vec<f32>, GSVError> {
         let text_seq = Array2::from_shape_vec((1, text_seq_vec.len()), text_seq_vec.to_vec())?;
         // let mut text_bert = Array2::<f32>::zeros((text_seq.shape()[1], 1024));
-        let mut sampler = LogitsSampler::new();
+        let mut sampler = Sampler::new(VOCAB_SIZE);
 
         let (x, prompts) = {
             let time = SystemTime::now();
