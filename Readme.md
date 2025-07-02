@@ -35,7 +35,15 @@
 * **源代码**: [gpt-sovits-android-demo](https://github.com/null-define/gpt-sovits-android-demo/tree/master)
 * **演示视频**:
 
+目前推理耗时在8 elite这一类的高端移动端soc上是可以接受的。
+
 https://github.com/user-attachments/assets/03565b5f-a3e4-4689-83c5-7ed72b6acf86
+
+当和LLM结合时，TTS的效果如下（此demo由于bug太多功能不稳定，尚未开源）
+
+https://github.com/user-attachments/assets/158fafd4-e2c9-416d-92c8-8e4340220de8
+
+
 
 > **注意**：演示机型为 iQOO 13。实际推理时间在不同 SoC 和设备上可能存在显著差异。
 
