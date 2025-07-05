@@ -66,10 +66,8 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
     if "vits" in output_lower:
         model = optimize(model, passes=get_fuse_and_elimination_passes())
         logger.info(f"ONNX optimization done for: {output_path}")
-        model, _ = simplify(model)
+        model = slim(model)
         logger.info(f"ONNX simplification done for: {output_path}")
-        # model = slim(model)
-        # logger.info(f"ONNX slim optimization done for: {output_path}")
         model = version_converter.convert_version(model, 21)
         onnx.save(model, output_path)
         return output_path

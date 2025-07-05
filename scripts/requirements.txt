@@ -5,4 +5,4 @@ onnxruntime>= 1.22.0
 onnxruntime_extensions>=0.14.0
 onnxruntime-genai>= 0.6.0
 onnxsim>= 0.4.36
-onnxslim>=0.1.58
+onnxslim>=0.1.59
