@@ -3,13 +3,12 @@ use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
 use log::{debug, info};
 use ndarray::{
-    Array, Array2, ArrayBase, ArrayD, ArrayView2, Axis, IxDyn,
-    OwnedRepr, concatenate, s,
+    Array, Array2, ArrayBase, ArrayD, ArrayView2, Axis, IxDyn, OwnedRepr, concatenate, s,
 };
 use ort::{
     inputs,
     session::Session,
-    value::TensorRef,
+    value::{Tensor, TensorRef},
 };
 use std::time::SystemTime;
 use std::{fs::File, path::Path};
@@ -212,8 +211,6 @@ impl TTSModel {
         sampler: &mut Sampler,
         sampling_param: SamplingParams,
         mut y_vec: Vec<i64>,
-        mut y_emb: ArrayBase<OwnedRepr<f32>, IxDyn>,
-        x_example: ArrayBase<OwnedRepr<f32>, IxDyn>,
         mut k_caches: Vec<ArrayBase<OwnedRepr<KvDType>, IxDyn>>,
         mut v_caches: Vec<ArrayBase<OwnedRepr<KvDType>, IxDyn>>,
         prefix_len: usize,
@@ -228,8 +225,8 @@ impl TTSModel {
             // let time = SystemTime::now();
             let mut inputs = inputs![
                 "iy" => TensorRef::from_array_view(unsafe {ArrayView2::from_shape_ptr((1, y_vec.len()), y_vec.as_ptr())}).unwrap(),
-                "iy_emb" => TensorRef::from_array_view(&y_emb).unwrap(),
-                "x_example" => TensorRef::from_array_view(&x_example).unwrap()
+                "y_len" => Tensor::from_array(Array::from_vec(vec![(prefix_len) as i64])).unwrap(),
+                "idx" => Tensor::from_array(Array::from_vec(vec![idx as i64])).unwrap(),
             ];
 
             for i in 0..self.num_layers {
@@ -262,7 +259,6 @@ impl TTSModel {
                     &[]
                 },
             ));
-            y_emb = output["y_emb"].try_extract_array::<f32>()?.into_owned();
 
             // --- 3. Check for reallocation and update caches ---
             let new_valid_len = valid_len + 1;
@@ -395,41 +391,50 @@ impl TTSModel {
         // let mut text_bert = Array2::<f32>::zeros((text_seq.shape()[1], 1024));
         let mut sampler = Sampler::new(VOCAB_SIZE);
 
-        let (x, prompts) = {
+        let prompts = {
             let time = SystemTime::now();
             let encoder_output = self.t2s_encoder.run(inputs![
-                "ref_seq" => TensorRef::from_array_view(&ref_data.ref_seq)?,
-                "text_seq" => TensorRef::from_array_view(&text_seq)?,
-                "ref_bert" => TensorRef::from_array_view(&ref_data.ref_bert)?,
-                "text_bert" => TensorRef::from_array_view(text_bert)?,
                 "ssl_content" => TensorRef::from_array_view(&ref_data.ssl_content)?
             ])?;
             debug!("T2S Encoder time: {:?}", time.elapsed()?);
-            (
-                encoder_output["x"].try_extract_array::<f32>()?.into_owned(),
-                encoder_output["prompts"]
-                    .try_extract_array::<i64>()?
-                    .into_owned(),
-            )
+            encoder_output["prompts"]
+                .try_extract_array::<i64>()?
+                .into_owned()
         };
+
+        let x = concatenate(Axis(1), &[ref_data.ref_seq.view(), text_seq.view()])?.to_owned();
+        // println!("{:?}",ref_data.ref_bert.shape());
+        // println!("{:?}",text_bert.shape());
+        let bert = concatenate(
+            Axis(1),
+            &[
+                ref_data.ref_bert.clone().permuted_axes([1, 0]).view(),
+                text_bert.clone().permuted_axes([1, 0]).view(),
+            ],
+        )?;
+
+        // println!("{:?}",bert.shape());
+        // println!("{:?}",x.shape());
+        let bert = bert.insert_axis(Axis(0)).to_owned();
+
+        //   "ref_seq" => TensorRef::from_array_view(&ref_data.ref_seq)?,
+        //         "text_seq" => TensorRef::from_array_view(&text_seq)?,
+        //         "ref_bert" => TensorRef::from_array_view(&ref_data.ref_bert)?,
+        //         "text_bert" => TensorRef::from_array_view(text_bert)?,
         let (mut y_vec, _) = prompts.clone().into_raw_vec_and_offset();
 
         let prefix_len = y_vec.len();
-        let (y_vec, y_emb, x_example, k_caches, v_caches, initial_seq_len) = {
+
+        let (y_vec, k_caches, v_caches, initial_seq_len) = {
             let time = SystemTime::now();
             let fs_decoder_output = self.t2s_fs_decoder.run(inputs![
-                "x" => TensorRef::from_array_view(&x)?,
-                "prompts" => TensorRef::from_array_view(&prompts)?
+                "x" => TensorRef::from_array_view(&x.as_standard_layout())?,
+                "prompts" => TensorRef::from_array_view(&prompts)?,
+                "bert" => TensorRef::from_array_view(&bert.as_standard_layout())?,
             ])?;
             debug!("T2S FS Decoder time: {:?}", time.elapsed()?);
 
             let logits = fs_decoder_output["logits"]
-                .try_extract_array::<f32>()?
-                .into_owned();
-            let y_emb = fs_decoder_output["y_emb"]
-                .try_extract_array::<f32>()?
-                .into_owned();
-            let x_example = fs_decoder_output["x_example"]
                 .try_extract_array::<f32>()?
                 .into_owned();
 
@@ -476,7 +481,7 @@ impl TTSModel {
             );
             // debug!("sampled token {}", sampling_rst);
             y_vec.push(sampling_rst);
-            (y_vec, y_emb, x_example, k_caches, v_caches, initial_seq_len)
+            (y_vec, k_caches, v_caches, initial_seq_len)
         };
 
         let time = SystemTime::now();
@@ -484,8 +489,6 @@ impl TTSModel {
             &mut sampler,
             sampling_param,
             y_vec,
-            y_emb,
-            x_example,
             k_caches,
             v_caches,
             prefix_len,
@@ -556,11 +559,12 @@ fn read_and_resample_audio<P: AsRef<Path>>(
         .map(|s| s as f32 / i16::MAX as f32)
         .collect();
 
-    let ref_audio_16k = if spec.sample_rate != 16000 {
+    let mut ref_audio_16k = if spec.sample_rate != 16000 {
         resample_audio(audio_samples.clone(), spec.sample_rate, 16000)?
     } else {
         audio_samples.clone()
     };
+    ref_audio_16k.extend(vec![0.0; (0.3 * 16000.0) as usize]);
     let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
 
     Ok((

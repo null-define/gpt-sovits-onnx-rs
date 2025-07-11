@@ -24,10 +24,26 @@ def scaled_dot_product_attention_custom(
     value = value.view(-1, num_heads, head_dim).transpose(0, 1) # 170, 1, 512 -> 170, 16, 32 -> 16, 170, 32
 
     scale_factor = torch.tensor(1 / math.sqrt(query.size(-1)))
+    attn_bias = torch.zeros(
+        1, query.shape[1], query.shape[1], dtype=query.dtype)
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_bias.masked_fill_(attn_mask, float("-inf"))
+        else:
+            attn_bias += attn_mask
 
     attn_weight = query @ key * scale_factor
-    attn_weight = attn_mask + attn_weight
+    attn_weight += attn_bias
     attn_weight = torch.softmax(attn_weight, dim=-1)
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_weight.masked_fill_(attn_mask, 0)
+        else:
+            # attn_mask[attn_mask != float("-inf")] = 0
+            # attn_mask[attn_mask == float("-inf")] = 1
+            attn_weight += attn_mask
+
     return attn_weight @ value
 
 def multi_head_attention_forward_patched(
@@ -72,27 +88,19 @@ def multi_head_attention_forward_patched(
         v: Updated value tensor.
     """
     _, _, embed_dim = query.shape
-    attn_mask = _canonical_mask(
-        mask=attn_mask,
-        mask_name="attn_mask",
-        other_type=None,
-        other_name="",
-        target_type=query.dtype,
-        check_other=False,
-    )
     head_dim = embed_dim // num_heads
-    proj_qkv = linear(query, in_proj_weight, in_proj_bias)
-    proj_qkv = proj_qkv.unflatten(-1, (3, query.size(-1))).unsqueeze(0).transpose(0, -2).squeeze(-2).contiguous()
-    q, k, v = proj_qkv[0], proj_qkv[1], proj_qkv[2]
+    q, k, v  = linear(query, in_proj_weight, in_proj_bias).chunk(3, dim= -1)
+    # proj_qkv = proj_qkv.unflatten(-1, (3, query.size(-1))).unsqueeze(0).transpose(0, -2).squeeze(-2).contiguous()
+    # = proj_qkv[0], proj_qkv[1], proj_qkv[2]
 
     # Update key and value with cache
     if k_cache is not None and v_cache is not None and not first_infer:
         k = torch.cat([k_cache, k], dim=0)
         v = torch.cat([v_cache, v], dim=0)
 
-    attn_output = scaled_dot_product_attention_custom(q, k, v, attn_mask, num_heads, head_dim)
+    attn = scaled_dot_product_attention_custom(q, k, v, attn_mask, num_heads, head_dim)
 
-    attn_output = attn_output.permute(1, 0, 2).contiguous().view(-1, embed_dim)
-    attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
-    attn_output = attn_output.view(-1, 1, attn_output.size(1))
-    return attn_output, k, v
+    attn = attn.permute(1, 0, 2).contiguous().view(-1, embed_dim)
+    attn = linear(attn, out_proj_weight, out_proj_bias)
+    attn = attn.view(-1, 1, attn.size(1))
+    return attn, k, v
