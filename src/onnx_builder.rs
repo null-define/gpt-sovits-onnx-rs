@@ -23,5 +23,7 @@ pub fn create_onnx_cpu_session<P: AsRef<Path>>(path: P) -> Result<Session, GSVEr
         .with_memory_pattern(true)?
         .with_prepacking(true)?
         .with_config_entry("session.enable_mem_reuse", "1")?
+        .with_independent_thread_pool()?
+        .with_intra_op_spinning(true)?
         .commit_from_file(path)?)
 }

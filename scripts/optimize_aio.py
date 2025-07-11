@@ -94,10 +94,7 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
     if "decoder" in output_lower:
         optimized_model = optimizer.optimize_model(
             model,
-            num_heads=24,
-            hidden_size=768,
-            opt_level=2,
-            # only_onnxruntime=True,
+            only_onnxruntime=True,
         )
         model = optimized_model.model
     
@@ -106,8 +103,7 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
 
     model = slim(model)
     logger.info(f"ONNX slim optimization done for: {output_path}")
-    model, _ = simplify(model, include_subgraph=True)
-    logger.info(f"ONNX simplification done for: {output_path}")
+
     
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")

@@ -79,21 +79,23 @@ def sample(logits, previous_tokens, **sampling_kwargs):
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
-class OnnxEncoder(nn.Module):
-    def __init__(self, ar_text_embedding, bert_proj, ar_text_position):
-        super().__init__()
-        self.ar_text_embedding = ar_text_embedding
-        self.bert_proj = bert_proj
-        self.ar_text_position = ar_text_position
+# class OnnxEncoder(nn.Module):
+#     def __init__(self, ar_text_embedding, bert_proj, ar_text_position):
+#         super().__init__()
+#         self.ar_text_embedding = ar_text_embedding
+#         self.bert_proj = bert_proj
+#         self.ar_text_position = ar_text_position
 
-    def forward(self, x, bert_feature):
-        x = self.ar_text_embedding(x)
-        x = x + self.bert_proj(bert_feature.transpose(1, 2))
-        return self.ar_text_position(x)
+#     def forward(self, x, bert_feature):
+#         x = self.ar_text_embedding(x)
+#         x = x + self.bert_proj(bert_feature.transpose(1, 2))
+#         return self.ar_text_position(x)
+
 
 class T2SFirstStageDecoder(nn.Module):
     def __init__(
         self,
+        ar_text_embedding, bert_proj, ar_text_position,
         ar_audio_embedding,
         ar_audio_position,
         h,
@@ -101,44 +103,45 @@ class T2SFirstStageDecoder(nn.Module):
         num_layers,
     ):
         super().__init__()
+        self.ar_text_embedding = ar_text_embedding
+        self.bert_proj = bert_proj
+        self.ar_text_position = ar_text_position
         self.ar_audio_embedding = ar_audio_embedding
         self.ar_audio_position = ar_audio_position
         self.h = h
         self.ar_predict_layer = ar_predict_layer
         self.num_layers = num_layers
 
-    def forward(self, x, prompt):
-        y = prompt
-        x_example = x[:, :, 0] * 0.0
-        y_emb = self.ar_audio_embedding(y)
-        y_emb_cache = y_emb
+    def forward(self, x, prompt, bert_feature):
+        x = self.ar_text_embedding(x)
+        x = x + self.bert_proj(bert_feature.transpose(1, 2))
+        x = self.ar_text_position(x)
 
+        y = prompt
+        x_len = x.shape[1]
+        y_emb = self.ar_audio_embedding(y)
         y_pos = self.ar_audio_position(y_emb)
         xy_pos = torch.concat([x, y_pos], dim=1)
+        y_len = y_emb.shape[1]
 
-        y_example = y_pos[:, :, 0] * 0.0
-        x_attn_mask = torch.matmul(x_example.transpose(0, 1), x_example).bool()
-        y_attn_mask = torch.ones_like(torch.matmul(y_example.transpose(0, 1), y_example), dtype=torch.int64)
-        y_attn_mask = torch.cumsum(y_attn_mask, dim=1) - torch.cumsum(
-            torch.ones_like(y_example.transpose(0, 1), dtype=torch.int64), dim=0
-        )
-        y_attn_mask = y_attn_mask > 0
-
-        x_y_pad = torch.matmul(x_example.transpose(0, 1), y_example).bool()
-        y_x_pad = torch.matmul(y_example.transpose(0, 1), x_example).bool()
-        x_attn_mask_pad = torch.cat([x_attn_mask, torch.ones_like(x_y_pad)], dim=1)
-        y_attn_mask = torch.cat([y_x_pad, y_attn_mask], dim=1)
+        x_attn_mask_pad = F.pad(
+                torch.zeros((x_len, x_len), dtype=torch.bool),
+                (0, y_len),
+                value=True,
+            )
+        y_attn_mask = F.pad(
+                torch.triu(torch.ones(y_len, y_len, dtype=torch.bool), diagonal=1),
+                (x_len, 0),
+                value=False,
+            )
         xy_attn_mask = torch.concat([x_attn_mask_pad, y_attn_mask], dim=0)
-
-        k_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(self.num_layers)]
-        v_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(self.num_layers)]
-
-        xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=k_cache, v_cache=v_cache, first_infer=True)
+        print("xy_attn_mask: ",xy_attn_mask)
+        xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=None, v_cache=None, first_infer=True)
         logits = self.ar_predict_layer(xy_dec[:, -1])
         # samples = sample(logits[0], y,top_k=self.top_k, top_p = 1.0, temperature=1.0)[0].unsqueeze(0) # 避免句首不稳定
 
         # y = torch.concat([y, samples], dim=1)
-        return logits[0], k_cache, v_cache, y_emb_cache, x_example
+        return logits[0], k_cache, v_cache
 
 class T2SStageDecoder(nn.Module):
     def __init__(
@@ -151,26 +154,20 @@ class T2SStageDecoder(nn.Module):
     ):
         super().__init__()
         self.ar_audio_embedding = ar_audio_embedding
-        self.ar_audio_position = ar_audio_position
+        self.ar_audio_position:SinePositionalEmbedding  = ar_audio_position
         self.h = h
         self.ar_predict_layer = ar_predict_layer
         self.num_layers = num_layers
 
-    def forward(self, y, k_cache, v_cache, y_emb, x_example):
-        y_emb = torch.cat([y_emb, self.ar_audio_embedding(y[:, -1:])], 1)
+    def forward(self, y, k_cache, v_cache, y_len, idx):
+        y_emb = self.ar_audio_embedding(y[:, -1:])
 
-        y_pos = self.ar_audio_position(y_emb)
-        xy_pos = y_pos[:, -1:]
-        y_example = y_pos[:, :, 0] * 0.0
-        xy_attn_mask = torch.cat([x_example, y_example], dim=1)
-        xy_attn_mask = torch.zeros_like(xy_attn_mask, dtype=torch.bool)
+        xy_pos = y_emb * self.ar_audio_position.x_scale + self.ar_audio_position.alpha * self.ar_audio_position.pe[:,y_len + idx]
 
-        xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=k_cache, v_cache=v_cache, first_infer=False)
+        xy_dec, k_cache, v_cache = self.h(xy_pos, mask=None, k_cache=k_cache, v_cache=v_cache, first_infer=False)
         logits = self.ar_predict_layer(xy_dec[:, -1])
-        # samples = sample(logits[0], y, top_k=self.top_k, top_p = 1.0, temperature=1.0)[0].unsqueeze(0)
 
-        # y = torch.concat([y, samples], dim=1)
-        return logits[0], k_cache, v_cache, y_emb
+        return logits[0], k_cache, v_cache
 
 class Text2SemanticDecoder(nn.Module):
     def __init__(self, config, norm_first=False):
@@ -204,8 +201,9 @@ class Text2SemanticDecoder(nn.Module):
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
 
     def init_onnx(self):
-        self.onnx_encoder = OnnxEncoder(self.ar_text_embedding, self.bert_proj, self.ar_text_position)
+        # self.onnx_encoder = OnnxEncoder()
         self.first_stage_decoder = T2SFirstStageDecoder(
+            self.ar_text_embedding, self.bert_proj, self.ar_text_position,
             self.ar_audio_embedding,
             self.ar_audio_position,
             self.h,

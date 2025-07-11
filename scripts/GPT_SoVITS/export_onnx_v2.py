@@ -74,17 +74,15 @@ class DictToAttrRecursive(dict):
 class T2SEncoder(nn.Module):
     def __init__(self, t2s, vits):
         super().__init__()
-        self.encoder = t2s.onnx_encoder
         self.vits = vits
     
-    def forward(self, ref_seq, text_seq, ref_bert, text_bert, ssl_content):
+    def forward(self, ssl_content):
         codes = self.vits.extract_latent(ssl_content)
         prompt_semantic = codes[0, 0]
-        bert = torch.cat([ref_bert.transpose(0, 1), text_bert.transpose(0, 1)], 1)
-        all_phoneme_ids = torch.cat([ref_seq, text_seq], 1)
-        bert = bert.unsqueeze(0)
-        prompt = prompt_semantic.unsqueeze(0)
-        return self.encoder(all_phoneme_ids, bert), prompt
+        x = prompt_semantic.unsqueeze(0)
+        # x -> all_phoneme_ids
+        # all_phoneme_ids.len
+        return x
 
 class T2SModel(nn.Module):
     def __init__(self, t2s_path, vits_model):
@@ -107,15 +105,19 @@ class T2SModel(nn.Module):
 
     def forward(self, ref_seq, text_seq, ref_bert, text_bert, ssl_content):
         early_stop_num = torch.LongTensor([self.hz * self.max_sec])
-        x, prompts = self.onnx_encoder(ref_seq, text_seq, ref_bert, text_bert, ssl_content)
+        prompts = self.onnx_encoder(ssl_content)
+        bert = torch.cat([ref_bert.transpose(0, 1), text_bert.transpose(0, 1)], 1)
+        bert = bert.unsqueeze(0)
+        x = torch.cat([ref_seq, text_seq], 1)
+        y_len = prompts.shape[1]
         prefix_len = prompts.shape[1]
-        logits, k_cache, v_cache, y_emb, x_example = self.first_stage_decoder(x, prompts)
+        logits, k_cache, v_cache = self.first_stage_decoder(x, prompts, bert)
+        y = prompts
         samples = sample(logits, prompts,top_k=15, top_p = 1.0, temperature=1.0)[0].unsqueeze(0)
-        y = torch.concat([prompts, samples], dim=1)
 
         stop = False
-        for idx in range(1, 1500):
-            logits, k_cache, v_cache, y_emb = self.stage_decoder(y, k_cache, v_cache, y_emb, x_example)
+        for idx in range(0, 1500):
+            logits, k_cache, v_cache = self.stage_decoder(y, k_cache, v_cache, y_len, idx)
             samples = sample(logits, y,top_k=15, top_p = 1.0, temperature=1.0)[0].unsqueeze(0)
             y = torch.concat([y, samples], dim=1)
             if early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num:
@@ -130,20 +132,23 @@ class T2SModel(nn.Module):
     def export(self, ref_seq, text_seq, ref_bert, text_bert, ssl_content, project_name):
         torch.onnx.export(
             self.onnx_encoder,
-            (ref_seq, text_seq, ref_bert, text_bert, ssl_content),
+            (ssl_content),
             f"onnx/{project_name}/{project_name}_t2s_encoder.onnx",
-            input_names=["ref_seq", "text_seq", "ref_bert", "text_bert", "ssl_content"],
-            output_names=["x", "prompts"],
+            input_names=["ssl_content"],
+            output_names=["prompts"],
             dynamic_axes={
-                "ref_seq": {1: "ref_length"},
-                "text_seq": {1: "text_length"},
-                "ref_bert": {0: "ref_bert_length"},
-                "text_bert": {0: "text_bert_length"},
                 "ssl_content": {2: "ssl_length"},
             },
             opset_version=20,
         )
-        x, prompts = self.onnx_encoder(ref_seq, text_seq, ref_bert, text_bert, ssl_content)
+        
+        prompts = self.onnx_encoder(ssl_content)
+
+        bert = torch.cat([ref_bert.transpose(0, 1), text_bert.transpose(0, 1)], 1)
+        bert = bert.unsqueeze(0)
+        x = torch.cat([ref_seq, text_seq], 1)
+        y_len = prompts.shape[1]
+
 
         num_layers = self.t2s_model.num_layers
         k_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(num_layers)]
@@ -152,43 +157,39 @@ class T2SModel(nn.Module):
         # Export first stage decoder
         torch.onnx.export(
             self.first_stage_decoder,
-            (x, prompts),
+            (x, prompts, bert),
             f"onnx/{project_name}/{project_name}_t2s_fs_decoder.onnx",
-            input_names=["x", "prompts"],
+            input_names=["x", "prompts", "bert"],
             output_names=["logits"] + [f"k_cache_{i}" for i in range(num_layers)] + 
-                         [f"v_cache_{i}" for i in range(num_layers)] + ["y_emb", "x_example"],
+                         [f"v_cache_{i}" for i in range(num_layers)],
             dynamic_axes={
                 "x": {1: "x_length"},
                 "prompts": {1: "prompts_length"},
+                "bert": {2: "bert_length"},
                 **{f"k_cache_{i}": {0: "k_length"} for i in range(num_layers)},
                 **{f"v_cache_{i}": {0: "v_length"} for i in range(num_layers)},
-                "y_emb": {1: "y_emb_length"},
-                "x_example": {1: "x_example_length"},
+                "logits": {1: "logits_length"},
             },
             verbose=False,
             opset_version=20
         )
-        logits, k_cache, v_cache, y_emb, x_example = self.first_stage_decoder(x, prompts)
+        logits, k_cache, v_cache  = self.first_stage_decoder(x, prompts, bert)
         samples = sample(logits, prompts,top_k=15, top_p = 1.0, temperature=1.0)[0].unsqueeze(0)
         y = torch.concat([prompts, samples], dim=1)
+        idx = 0
         # Export stage decoder
         torch.onnx.export(
             self.stage_decoder,
-            (y, k_cache, v_cache, y_emb, x_example),
+            (y, k_cache, v_cache, y_len, idx),
             f"onnx/{project_name}/{project_name}_t2s_s_decoder.onnx",
             input_names=["iy"] + [f"ik_cache_{i}" for i in range(num_layers)] + 
-                        [f"iv_cache_{i}" for i in range(num_layers)] + ["iy_emb", "x_example"],
+                        [f"iv_cache_{i}" for i in range(num_layers)] + ["y_len", "idx"],
             output_names=["logits"] + [f"k_cache_{i}" for i in range(num_layers)] + 
-                         [f"v_cache_{i}" for i in range(num_layers)] + ["y_emb"],
+                         [f"v_cache_{i}" for i in range(num_layers)],
             dynamic_axes={
                 "iy": {1: "iy_length"},
                 **{f"ik_cache_{i}": {0: "ik_length"} for i in range(num_layers)},
                 **{f"iv_cache_{i}": {0: "iv_length"} for i in range(num_layers)},
-                "iy_emb": {1: "y_emb_length"},
-                **{f"k_cache_{i}": {0: "k_length"} for i in range(num_layers)},
-                **{f"v_cache_{i}": {0: "v_length"} for i in range(num_layers)},
-                "y_emb": {1: "y_emb_length"},
-                "x_example": {1: "x_example_length"},
             },
             verbose=False,
             opset_version=20
@@ -265,10 +266,10 @@ class SSLModel(nn.Module):
         super().__init__()
         cnhubert_base_path = "GPT_SoVITS/pretrained_models/chinese-hubert-base"
         cnhubert.cnhubert_base_path = cnhubert_base_path
-        self.ssl = cnhubert.get_model()
+        self.ssl = cnhubert.get_model().model
 
     def forward(self, ref_audio_16k):
-        return self.ssl.model(ref_audio_16k)["last_hidden_state"].transpose(1, 2)
+        return self.ssl(ref_audio_16k)["last_hidden_state"].transpose(1, 2)
 
 
 
