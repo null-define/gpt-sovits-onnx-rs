@@ -43,110 +43,50 @@ fn cleanup_text(text: &str) -> String {
     CLEANUP_REGEX.replace_all(text, " ").into_owned()
 }
 
-fn merge_short_sentences(sentences: Vec<&str>) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut i: usize = 0;
 
-    while i < sentences.len() {
-        let current = sentences[i];
-        let word_count = if str_is_chinese(current) {
-            current.len()
-        } else {
-            current.split_whitespace().count()
-        };
-
-        if word_count < 4 && i + 1 < sentences.len() {
-            // Merge with next sentence
-            let merged = format!("{} {}", current, sentences[i + 1]);
-            result.push(merged);
-            i += 2; // Skip next because it's merged
-        } else {
-            result.push((current).to_owned());
-            i += 1;
-        }
+pub fn split_text(text: &str, max_chunk_size: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![];
     }
-
-    result
-}
-
-/// Splits text into chunks, handling long sentences gracefully.
-///
-/// This version is corrected to be compatible with older versions of the `regex` crate.
-pub fn split_text(text: &str, max_len: usize) -> Vec<String> {
-    debug!("Original text length: {}", text.chars().count());
+    debug!("split before: {:?}", text);
+    // let re = Regex::new(r"([。.?！!；;\n])").unwrap(); // Capture punctuation
     let mut chunks = Vec::new();
-
-    // --- FIX START ---
-    // Manually implement `split_inclusive` logic using `find_iter` for compatibility.
-    let mut sentences_parts = Vec::new();
+    let mut current_chunk = String::new();
     let mut last_end = 0;
-    // Dereference the Lazy wrapper to access the Regex object.
+
+    // Iterate through matches to include punctuation in chunks
     for mat in SENTENCE_END_REGEX.find_iter(text) {
-        sentences_parts.push(&text[last_end..mat.end()]);
+        let segment = &text[last_end..mat.start()];
+        let punct = mat.as_str();
+        current_chunk.push_str(segment);
+        current_chunk.push_str(punct);
+
+        // Check if chunk exceeds max_chunk_size or ends with punctuation
+        if current_chunk.len() >= max_chunk_size {
+            let trimmed = current_chunk.trim();
+            if !trimmed.is_empty() {
+                chunks.push(trimmed.to_string());
+            }
+            current_chunk.clear();
+        } else if !current_chunk.trim().is_empty() {
+            chunks.push(current_chunk.trim().to_string());
+            current_chunk.clear();
+        }
+
         last_end = mat.end();
     }
+
+    // Handle any remaining text after the last punctuation
     if last_end < text.len() {
-        sentences_parts.push(&text[last_end..]);
-    }
-    // --- FIX END ---
-
-    //
-    let sentences_parts = merge_short_sentences(sentences_parts);
-
-    for sentence in sentences_parts {
-        let sentence_trimmed = sentence.trim();
-        if sentence_trimmed.is_empty() {
-            continue;
-        }
-
-        if sentence_trimmed.chars().count() <= max_len {
-            chunks.push(sentence_trimmed.to_string());
-            continue;
-        }
-
-        let mut current_pos = 0;
-        while sentence_trimmed[current_pos..].chars().count() > max_len {
-            let chunk_candidate = &sentence_trimmed[current_pos..];
-            let mut window_end = 0;
-            // Correctly calculate the end of the window based on char count
-            for (i, c) in chunk_candidate.char_indices() {
-                if window_end >= max_len {
-                    break;
-                }
-                window_end = i + c.len_utf8();
-            }
-            let window = &chunk_candidate[..window_end];
-
-            match window.rfind(|c: char| ",，:：".contains(c)) {
-                Some(split_idx) => {
-                    let split_point = current_pos + split_idx + 1; // Split after the punctuation
-                    chunks.push(
-                        sentence_trimmed[current_pos..split_point]
-                            .trim()
-                            .to_string(),
-                    );
-                    current_pos = split_point;
-                }
-                None => {
-                    let split_point = current_pos + window_end;
-                    chunks.push(
-                        sentence_trimmed[current_pos..split_point]
-                            .trim()
-                            .to_string(),
-                    );
-                    current_pos = split_point;
-                }
-            }
-        }
-
-        let remaining_part = sentence_trimmed[current_pos..].trim();
-        if !remaining_part.is_empty() {
-            chunks.push(remaining_part.to_string());
+        current_chunk.push_str(&text[last_end..]);
+        let trimmed = current_chunk.trim();
+        if !trimmed.is_empty() {
+            chunks.push(trimmed.to_string());
         }
     }
 
-    debug!("Split into {} chunks", chunks.len());
-    chunks.into_iter().filter(|c| !c.is_empty()).collect()
+    debug!("chunks {:?}", chunks);
+    chunks
 }
 
 #[derive(Debug, Clone, Copy)]

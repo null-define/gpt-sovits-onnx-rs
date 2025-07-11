@@ -556,11 +556,12 @@ fn read_and_resample_audio<P: AsRef<Path>>(
         .map(|s| s as f32 / i16::MAX as f32)
         .collect();
 
-    let ref_audio_16k = if spec.sample_rate != 16000 {
+    let mut ref_audio_16k = if spec.sample_rate != 16000 {
         resample_audio(audio_samples.clone(), spec.sample_rate, 16000)?
     } else {
         audio_samples.clone()
     };
+    ref_audio_16k.extend(vec![0.0; (0.3 * 16000.0) as usize]);
     let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
 
     Ok((
