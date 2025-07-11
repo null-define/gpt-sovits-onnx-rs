@@ -3,14 +3,9 @@ use futures::{Stream, StreamExt};
 use hound::{WavReader, WavSpec};
 use log::{debug, info};
 use ndarray::{
-    Array, Array2, ArrayBase, ArrayD, ArrayView2, Axis, IxDyn,
-    OwnedRepr, concatenate, s,
+    Array, Array2, ArrayBase, ArrayD, ArrayView2, Axis, IxDyn, OwnedRepr, concatenate, s,
 };
-use ort::{
-    inputs,
-    session::Session,
-    value::TensorRef,
-};
+use ort::{inputs, session::Session, value::TensorRef};
 use std::time::SystemTime;
 use std::{fs::File, path::Path};
 use tokio::task::block_in_place;
@@ -250,18 +245,13 @@ impl TTSModel {
             let mut output = self.t2s_s_decoder.run(inputs)?;
 
             let mut logits = output["logits"].try_extract_array_mut::<f32>()?;
-            let logits = logits.as_slice_mut().unwrap();
+            let mut logits = logits.as_slice_mut().unwrap().to_owned();
 
-            y_vec.push(sampler.sample(
-                logits,
-                &y_vec,
-                &sampling_param,
-                if idx <= 10 {
-                    &[0, T2S_DECODER_EOS]
-                } else {
-                    &[]
-                },
-            ));
+            if idx < 11 {
+                logits.pop();
+            }
+
+            y_vec.push(sampler.sample(&mut logits, &y_vec, &sampling_param));
             y_emb = output["y_emb"].try_extract_array::<f32>()?.into_owned();
 
             // --- 3. Check for reallocation and update caches ---
@@ -468,12 +458,8 @@ impl TTSModel {
                 v_caches.push(v_large);
             }
             let (mut logits_vec, _) = logits.into_raw_vec_and_offset();
-            let sampling_rst = sampler.sample(
-                &mut logits_vec,
-                &y_vec,
-                &sampling_param,
-                &[0, T2S_DECODER_EOS], // avoid breath
-            );
+            logits_vec.pop(); // remove T2S_DECODER_EOS
+            let sampling_rst = sampler.sample(&mut logits_vec, &y_vec, &sampling_param);
             // debug!("sampled token {}", sampling_rst);
             y_vec.push(sampling_rst);
             (y_vec, y_emb, x_example, k_caches, v_caches, initial_seq_len)
