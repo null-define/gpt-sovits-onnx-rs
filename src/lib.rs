@@ -89,7 +89,12 @@ impl TTSModel {
         //             .build()])?
         //         .with_optimization_level(GraphOptimizationLevel::Level3)?
         //         .with_intra_threads(8)?
-        //         .with_profiling("t2sd")?
+        //         .with_memory_pattern(true)?
+        //         .with_prepacking(true)?
+        //         .with_config_entry("session.enable_mem_reuse", "1")?
+        //         .with_independent_thread_pool()?
+        //         .with_intra_op_spinning(true)?
+        //         // .with_profiling("t2sd")?
         //         .commit_from_file(path)
         // };
 
@@ -216,7 +221,7 @@ impl TTSModel {
         prefix_len: usize,
         initial_valid_len: usize,
     ) -> Result<ArrayBase<OwnedRepr<i64>, IxDyn>, GSVError> {
-        let mut idx = 1;
+        let mut idx = 0;
         let mut valid_len = initial_valid_len;
         y_vec.reserve(2048);
 
@@ -247,18 +252,13 @@ impl TTSModel {
             let mut output = self.t2s_s_decoder.run(inputs)?;
 
             let mut logits = output["logits"].try_extract_array_mut::<f32>()?;
-            let logits = logits.as_slice_mut().unwrap();
+            let mut logits = logits.as_slice_mut().unwrap().to_owned();
 
-            y_vec.push(sampler.sample(
-                logits,
-                &y_vec,
-                &sampling_param,
-                if idx <= 10 {
-                    &[0, T2S_DECODER_EOS]
-                } else {
-                    &[]
-                },
-            ));
+            if idx < 11 {
+                logits.pop();
+            }
+
+            y_vec.push(sampler.sample(&mut logits, &y_vec, &sampling_param));
 
             // --- 3. Check for reallocation and update caches ---
             let new_valid_len = valid_len + 1;
@@ -403,8 +403,6 @@ impl TTSModel {
         };
 
         let x = concatenate(Axis(1), &[ref_data.ref_seq.view(), text_seq.view()])?.to_owned();
-        // println!("{:?}",ref_data.ref_bert.shape());
-        // println!("{:?}",text_bert.shape());
         let bert = concatenate(
             Axis(1),
             &[
@@ -413,14 +411,8 @@ impl TTSModel {
             ],
         )?;
 
-        // println!("{:?}",bert.shape());
-        // println!("{:?}",x.shape());
         let bert = bert.insert_axis(Axis(0)).to_owned();
 
-        //   "ref_seq" => TensorRef::from_array_view(&ref_data.ref_seq)?,
-        //         "text_seq" => TensorRef::from_array_view(&text_seq)?,
-        //         "ref_bert" => TensorRef::from_array_view(&ref_data.ref_bert)?,
-        //         "text_bert" => TensorRef::from_array_view(text_bert)?,
         let (mut y_vec, _) = prompts.clone().into_raw_vec_and_offset();
 
         let prefix_len = y_vec.len();
@@ -473,13 +465,8 @@ impl TTSModel {
                 v_caches.push(v_large);
             }
             let (mut logits_vec, _) = logits.into_raw_vec_and_offset();
-            let sampling_rst = sampler.sample(
-                &mut logits_vec,
-                &y_vec,
-                &sampling_param,
-                &[0, T2S_DECODER_EOS], // avoid breath
-            );
-            // debug!("sampled token {}", sampling_rst);
+            logits_vec.pop(); // remove T2S_DECODER_EOS
+            let sampling_rst = sampler.sample(&mut logits_vec, &y_vec, &sampling_param);
             y_vec.push(sampling_rst);
             (y_vec, k_caches, v_caches, initial_seq_len)
         };
@@ -565,7 +552,8 @@ fn read_and_resample_audio<P: AsRef<Path>>(
         audio_samples.clone()
     };
     ref_audio_16k.extend(vec![0.0; (0.3 * 16000.0) as usize]);
-    let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
+    let mut ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
+    ref_audio_32k.extend(vec![0.0; (0.3 * 32000.0) as usize]);
 
     Ok((
         Array2::from_shape_vec((1, ref_audio_16k.len()), ref_audio_16k)?,

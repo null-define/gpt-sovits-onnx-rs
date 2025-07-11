@@ -137,12 +137,12 @@ impl Sampler {
     }
 
     /// Finds the token with the highest logit value (argmax).
-    fn argmax(logits: &[f32], avoid_set: &HashSet<i64>) -> i64 {
+    fn argmax(logits: &[f32]) -> i64 {
         let mut max_logit = f32::NEG_INFINITY;
         let mut max_idx = 0;
 
         for (idx, &logit) in logits.iter().enumerate() {
-            if !avoid_set.contains(&(idx as i64)) && logit > max_logit {
+            if logit > max_logit {
                 max_logit = logit;
                 max_idx = idx;
             }
@@ -156,30 +156,21 @@ impl Sampler {
         logits: &mut [f32],
         prev_tokens: &[i64],
         params: &SamplingParams,
-        avoid_tokens: &[i64],
     ) -> i64 {
         Self::apply_repetition_penalty(logits, prev_tokens, params.repetition_penalty);
 
-        let avoid_set: HashSet<_> = avoid_tokens.iter().copied().collect();
-
         // Optimized path for greedy decoding (argmax).
         if params.temperature == 0.0 {
-            return Self::argmax(logits, &avoid_set);
+            return Self::argmax(logits);
         }
 
         Self::apply_temperature(logits, params.temperature);
         self.softmax(logits);
 
-        let mut candidates: Vec<(usize, f32)> = self
-            .probs
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(idx, prob)| !avoid_set.contains(&(*idx as i64)) && *prob > 0.0)
-            .collect();
+        let mut candidates: Vec<(usize, f32)> = self.probs.iter().copied().enumerate().collect();
 
         if candidates.is_empty() {
-            return Self::argmax(logits, &avoid_set);
+            return Self::argmax(logits);
         }
 
         // --- Top-K Filtering (Optimized O(V) selection) ---
@@ -219,7 +210,7 @@ impl Sampler {
                 // Return the highest probability candidate before this step.
                 return candidates
                     .first()
-                    .map_or_else(|| Self::argmax(logits, &avoid_set), |&(idx, _)| idx as i64);
+                    .map_or_else(|| Self::argmax(logits), |&(idx, _)| idx as i64);
             }
         };
 
