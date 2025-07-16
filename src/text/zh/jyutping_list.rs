@@ -1,3 +1,4 @@
+use log::{debug, warn};
 use regex::Regex;
 use serde_json;
 use std::collections::HashMap;
@@ -5,6 +6,68 @@ use std::collections::HashMap;
 lazy_static::lazy_static! {
     static ref TONED: HashMap<u32, String> = load_data();
     static ref TONELESS: HashMap<u32, String> = load_data();
+
+    static ref DICT: HashMap<String, Vec<String>> = load_dict();
+}
+
+fn match_indices_by_chars(text: &str, pattern: &str) -> Vec<(usize, String)> {
+    // Get all matches with byte indices
+    let matches = text.match_indices(pattern);
+    // Map byte indices to char indices
+    let mut result = Vec::new();
+    for (byte_idx, matched) in matches {
+        // Count characters up to the byte index
+        let char_idx = text[..byte_idx].chars().count();
+        result.push((char_idx, matched.to_string()));
+    }
+    result
+}
+
+fn load_dict() -> HashMap<String, Vec<String>> {
+    let content = include_str!("../../../resource/jyut6ping3.words.dict.yaml");
+    // Split content at "..." to separate YAML metadata and word list
+    let parts: Vec<&str> = content.split("...").collect();
+
+    // Parse the YAML metadata (first part)
+    // let yaml_part = parts[0].trim();
+
+    // Process the word list (second part)
+    let word_lines = parts[1].trim().lines();
+    let mut res = HashMap::new();
+
+    for line in word_lines {
+        // Skip empty lines or comments
+        if line.trim().is_empty() || line.trim().starts_with('#') {
+            continue;
+        }
+        // Split each line by tab
+        let columns: Vec<&str> = line.split('\t').collect();
+        if columns.len() == 2 {
+            // res
+            let mut t: Vec<String> = columns[1].split(" ").map(|v| v.to_string()).collect();
+            let matches = match_indices_by_chars(columns[0], "，");
+            for m in matches {
+                t.insert(m.0, m.1);
+                // println!("{:?}, {}", t, columns[0]);
+            }
+            let matches = match_indices_by_chars(columns[0], "：");
+            for m in matches {
+                t.insert(m.0, m.1);
+            }
+            if columns[0].chars().count() != t.len() {
+                // todo: fix in future
+                // warn!(
+                //     "char and jyutping size not match in dict, {} vs {:?}",
+                //     columns[0], t
+                // );
+            }
+            res.insert(columns[0].to_owned(), t);
+            // debug!("{}: {}",columns[0].to_owned(), columns[1].to_owned())
+        } else {
+            warn!("Skipping malformed line: {}", line);
+        }
+    }
+    res
 }
 
 fn load_data() -> HashMap<u32, String> {
@@ -67,8 +130,40 @@ pub fn get_jyutping(text: &str, tone: bool) -> String {
 
 pub fn get_jyutping_list(text: &str) -> Vec<(String, String)> {
     let mut res = Vec::new();
-    for ch in text.chars() {
-        res.push((ch.to_string(), get_jyutping(&ch.to_string(), false)));
+    let mut i = 0;
+    let chars: Vec<char> = text.chars().collect();
+
+    while i < chars.len() {
+        let mut found = false;
+
+        // Try to match the longest dictionary word starting at position i
+        for len in (1..=chars.len() - i).rev() {
+            let slice: String = chars[i..i + len].iter().collect();
+            if let Some(jyutping) = DICT.get(&slice) {
+                debug!("use dict: {}: {:?}", slice, jyutping);
+                let text_single: Vec<String> = slice.chars().map(|v| v.to_string()).collect();
+                if jyutping.len() != text_single.len() {
+                    warn!("char and jyutping size not match in dict, fallback to single character");
+                    i += len;
+                } else {
+                    for (ii, jy) in jyutping.iter().enumerate() {
+                        res.push((text_single[ii].clone(), jy.to_string()));
+                    }
+                    i += len;
+                    found = true;
+                }
+                break;
+            }
+        }
+
+        // If no dictionary match, use get_jyutping for single character
+        if !found {
+            let ch: String = chars[i].to_string();
+            let jyutping = get_jyutping(&ch, false);
+            res.push((ch, jyutping));
+            i += 1;
+        }
     }
+
     res
 }
