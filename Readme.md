@@ -110,14 +110,15 @@ cargo build --release
 > 为确保 ONNX Runtime 版本的灵活性与及时更新，**本项目不提供预构建的二进制文件**。您需要根据以下步骤自行构建。
 
 1. **环境准备**:
+      * `rustup target add aarch64-linux-android` 安装rust安卓工具链
       * 安装 CMake ≥ 3.28 (推荐使用 Conda 安装以避免系统版本限制)。
-      * 下载并配置 Android NDK 与 SDK，并设置好相关环境变量。
+      * 下载并配置 Android NDK 与 SDK，并设置好相关环境变量。like `export ANDROID_NDK_HOME=~/android-ndk-r27c` and `export ANDROID_SDK_HOME=~/android-sdk`
       * 在~/.cargo/config.toml中设置好`[target.aarch64-linux-android]`的linker和ar,注意androidN-clang的N最好>=28，最好保证build_for_android.sh中的android_api参数一致,比如
 
       ```toml
       [target.aarch64-linux-android]
       linker = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android32-clang"
-      ar = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+      ar = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
       ```
 
 2. **首次构建**:
