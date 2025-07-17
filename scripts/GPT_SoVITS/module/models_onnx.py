@@ -14,7 +14,6 @@ from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from module.commons import init_weights, get_padding
 from module.quantize import ResidualVectorQuantizer
-from module.mrte_model import MRTE
 
 # from text import symbols
 from text import symbols as symbols_v1
@@ -192,7 +191,7 @@ class TextEncoder(nn.Module):
             symbols = symbols_v2.symbols
         self.text_embedding = nn.Embedding(len(symbols), hidden_channels)
 
-        self.mrte = MRTE()
+        self.mrte = attentions.MRTE()
 
         self.encoder2 = attentions.Encoder(
             hidden_channels,

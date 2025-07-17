@@ -112,12 +112,15 @@ cargo build --release
 1. **环境准备**:
       * 安装 CMake ≥ 3.28 (推荐使用 Conda 安装以避免系统版本限制)。
       * 下载并配置 Android NDK 与 SDK，并设置好相关环境变量。
-      * 在~/.cargo/config.toml中设置好`[target.aarch64-linux-android]`的linker和ar,注意androidN-clang的N最好>=28，最好保证build_for_android.sh中的android_api参数一致,比如
+      * 在~/.cargo/config.toml中设置好`[target.aarch64-linux-android]`的linker和ar,注意androidN-clang的N最好>=28，
+        * 最好保证build_for_android.sh中的android_api参数一致
+        * 如果是较新版本的android系统，请使用16k page size `rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]`
 
       ```toml
       [target.aarch64-linux-android]
       linker = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android32-clang"
-      ar = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+      ar = "/android-ndk-r27c//toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+      rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
       ```
 
 2. **首次构建**:
