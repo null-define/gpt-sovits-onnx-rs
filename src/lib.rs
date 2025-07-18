@@ -236,8 +236,8 @@ impl TTSModel {
 
             for i in 0..self.num_layers {
                 // Create a view of the valid part of the cache
-                let k_view = k_caches[i].slice(s![..,0..valid_len, ..]);
-                let v_view = v_caches[i].slice(s![..,0..valid_len, ..]);
+                let k_view = k_caches[i].slice(s![.., 0..valid_len, ..]);
+                let v_view = v_caches[i].slice(s![.., 0..valid_len, ..]);
 
                 inputs.push((
                     format!("ik_cache_{}", i).into(),
@@ -285,11 +285,11 @@ impl TTSModel {
 
                     // Copy existing valid data to the new arrays
                     new_k
-                        .slice_mut(s![..,0..valid_len, ..])
-                        .assign(&old_k.slice(s![..,0..valid_len, ..]));
+                        .slice_mut(s![.., 0..valid_len, ..])
+                        .assign(&old_k.slice(s![.., 0..valid_len, ..]));
                     new_v
-                        .slice_mut(s![..,0..valid_len, ..])
-                        .assign(&old_v.slice(s![..,0..valid_len, ..]));
+                        .slice_mut(s![.., 0..valid_len, ..])
+                        .assign(&old_v.slice(s![.., 0..valid_len, ..]));
 
                     // Replace the old caches with the new, larger ones
                     k_caches[i] = new_k;
@@ -305,15 +305,15 @@ impl TTSModel {
                     output[format!("v_cache_{}", i)].try_extract_array::<KvDType>()?;
 
                 // The new data is the last row of the incremental output from the model
-                let k_new_slice = inc_k_cache.slice(s![..,valid_len, ..]);
-                let v_new_slice = inc_v_cache.slice(s![..,valid_len, ..]);
+                let k_new_slice = inc_k_cache.slice(s![.., valid_len, ..]);
+                let v_new_slice = inc_v_cache.slice(s![.., valid_len, ..]);
 
                 // Paste the new row into our long-running cache at the correct position
                 k_caches[i]
-                    .slice_mut(s![..,valid_len, ..])
+                    .slice_mut(s![.., valid_len, ..])
                     .assign(&k_new_slice);
                 v_caches[i]
-                    .slice_mut(s![..,valid_len, ..])
+                    .slice_mut(s![.., valid_len, ..])
                     .assign(&v_new_slice);
             }
 
@@ -321,13 +321,16 @@ impl TTSModel {
             valid_len = new_valid_len;
 
             if idx >= 1500 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS) {
+                y_vec.pop();
+                let full_len = y_vec.len();
                 let sliced = y_vec
-                    .split_off(prefix_len)
+                    .split_off(full_len - idx)
                     .into_iter()
                     .map(|i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .collect::<Vec<i64>>();
                 let y = ArrayD::from_shape_vec(IxDyn(&[1, 1, sliced.len()]), sliced)?;
-                debug!("t2s final idx: {}", idx);
+                // debug!("t2s final full_len {},  idx: {}", full_len, idx);
+                // debug!("prefix_len: {}", prefix_len);
                 return Ok(y);
             }
             idx += 1;
@@ -455,10 +458,10 @@ impl TTSModel {
 
                 // Copy the initial data from the first-pass decoder into the start of our large caches.
                 k_large
-                    .slice_mut(s![..,0..initial_seq_len, ..])
+                    .slice_mut(s![.., 0..initial_seq_len, ..])
                     .assign(&k_init);
                 v_large
-                    .slice_mut(s![..,0..initial_seq_len, ..])
+                    .slice_mut(s![.., 0..initial_seq_len, ..])
                     .assign(&v_init);
 
                 k_caches.push(k_large);
@@ -491,11 +494,23 @@ impl TTSModel {
         ])?;
         debug!("SoVITS time: {:?}", time.elapsed()?);
         let output_audio = outputs["audio"].try_extract_array::<f32>()?;
-        let mut audio = output_audio.into_owned().into_raw_vec();
-
+        let (mut audio, _) = output_audio.into_owned().into_raw_vec_and_offset();
         for sample in &mut audio {
             *sample = *sample * 4.0;
         }
+        // Find the maximum absolute value in the audio
+        let max_audio = audio
+            .iter()
+            .filter(|&&x| x.is_finite()) // Ignore NaN or inf
+            .fold(0.0f32, |acc, &x| acc.max(x.abs()));
+        let audio = if max_audio > 1.0 {
+            audio
+                .into_iter()
+                .map(|x| x / max_audio)
+                .collect::<Vec<f32>>()
+        } else {
+            audio
+        };
 
         Ok(audio)
     }
@@ -539,6 +554,7 @@ fn read_and_resample_audio<P: AsRef<Path>>(
         .map_err(|e| GSVError::from(format!("Failed to open reference audio: {}", e)))?;
     let wav_reader = WavReader::new(file)?;
     let spec = wav_reader.spec();
+    debug!("spec:{:?}", spec);
     let audio_samples: Vec<f32> = wav_reader
         .into_samples::<i16>()
         .collect::<Result<Vec<i16>, _>>()?
@@ -551,7 +567,7 @@ fn read_and_resample_audio<P: AsRef<Path>>(
     } else {
         audio_samples.clone()
     };
-    ref_audio_16k.extend(vec![0.0; (0.3 * 16000.0) as usize]);
+    // ref_audio_16k.extend(vec![0.0; (0.3 * 16000.0) as usize]); // this may hurt output quality
     let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
 
     Ok((
@@ -565,22 +581,32 @@ fn resample_audio(input: Vec<f32>, in_rate: u32, out_rate: u32) -> Result<Vec<f3
         return Ok(input);
     }
 
-    let ratio = in_rate as f32 / out_rate as f32;
-    let out_len = ((input.len() as f32 / ratio).ceil() as usize).max(1);
+    // Calculate the resampling ratio and output length
+    let ratio = in_rate as f64 / out_rate as f64; // Use f64 for better precision
+    let out_len = ((input.len() as f64 / ratio).ceil() as usize).max(1);
+
+    // Pre-allocate output vector
     let mut output = Vec::with_capacity(out_len);
 
+    // Perform linear interpolation
     for i in 0..out_len {
-        let src_idx = i as f32 * ratio;
+        let src_idx = i as f64 * ratio;
         let idx_floor = src_idx.floor() as usize;
-        let frac = src_idx - idx_floor as f32;
 
-        output.push(if idx_floor + 1 < input.len() {
+        // Handle boundary conditions
+        let sample = if idx_floor >= input.len() {
+            // Beyond input length, use last sample or zero
+            *input.last().unwrap_or(&0.0)
+        } else if idx_floor + 1 < input.len() {
+            // Linear interpolation between two samples
+            let frac = (src_idx - idx_floor as f64) as f32;
             input[idx_floor] * (1.0 - frac) + input[idx_floor + 1] * frac
-        } else if idx_floor < input.len() {
-            input[idx_floor]
         } else {
-            0.0
-        });
+            // At the last sample, no interpolation possible
+            input[idx_floor]
+        };
+
+        output.push(sample);
     }
 
     Ok(output)

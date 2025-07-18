@@ -12,6 +12,11 @@ from onnxconverter_common import float16
 from onnxslim import slim
 from onnxruntime.transformers import optimizer
 
+from onnxruntime.quantization import (
+    matmul_nbits_quantizer,
+    quant_utils,
+    quantize
+)
 
 
 # Configure logging
@@ -56,7 +61,7 @@ def validate_environment():
             exit(1)
 
 
-def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str:
+def process_model(file_path: str, output_path: str, use_quant: bool) -> str:
     """Process and optimize an ONNX model."""
     logger.info(f"Processing model: {file_path}")
     model = onnx.load(file_path)
@@ -75,7 +80,6 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
     # Simplify non-BERT models
     if "bert" in output_lower:
         # BERT model optimization
-
         optimized_model = optimizer.optimize_model(
             model,
             model_type="bert",
@@ -84,37 +88,76 @@ def process_model(file_path: str, output_path: str, use_int8_quant: bool) -> str
             only_onnxruntime=True,
         )
         model = version_converter.convert_version(optimized_model.model, 21)
-        if use_int8_quant:
-            quantize_dynamic(model, output_path)
-            logger.info(f"INT8 quantization done for: {output_path}")
+        # model = slim(model)
+        if use_quant:
+            quant_config = matmul_nbits_quantizer.DefaultWeightOnlyQuantConfig(
+                block_size=64,  # 2's exponential and >= 16
+                # if true, quantize to Int4. otherwise, quantize to uint4.
+                is_symmetric=True,
+                accuracy_level=2,  # used by MatMulNbits, see https://github.com/microsoft/onnxruntime/blob/main/docs/ContribOperators.md#attributes-35
+                quant_format=quant_utils.QuantFormat.QOperator,
+                # specify which op types to quantize
+                op_types_to_quantize=("MatMul", "Gather", "Attention"),
+                bits=4
+            )
+            quant = matmul_nbits_quantizer.MatMulNBitsQuantizer(
+                model,
+                nodes_to_exclude=None,  # specify a list of nodes to exclude from quantization
+                nodes_to_include=None,  # specify a list of nodes to force include from quantization
+                algo_config=quant_config,)
+            quant.process()
+            quant.model.save_model_to_file(output_path)
+            logger.info(f"INT4 quantization done for: {output_path}")
         else:
             onnx.save(model, output_path)
         return output_path
-    
+
     if "decoder" in output_lower:
         optimized_model = optimizer.optimize_model(
             model,
             only_onnxruntime=True,
         )
         model = optimized_model.model
-    
-    model = optimize(model, passes=get_fuse_and_elimination_passes())
+
+    # model = optimize(model, passes=get_fuse_and_elimination_passes())
     logger.info(f"ONNX optimization done for: {output_path}")
 
     model = slim(model)
     logger.info(f"ONNX slim optimization done for: {output_path}")
 
-    
     model = version_converter.convert_version(model, 21)
     logger.info(f"Opset conversion done for: {output_path}")
+    if use_quant and "g2p" in output_lower:
+        quant_config = matmul_nbits_quantizer.DefaultWeightOnlyQuantConfig(
+            block_size=64,  # 2's exponential and >= 16
+            # if true, quantize to Int4. otherwise, quantize to uint4.
+            is_symmetric=True,
+            accuracy_level=2,  # used by MatMulNbits, see https://github.com/microsoft/onnxruntime/blob/main/docs/ContribOperators.md#attributes-35
+            quant_format=quant_utils.QuantFormat.QOperator,
+            # specify which op types to quantize
+            op_types_to_quantize=("MatMul", "Gather", "Attention"),
+            bits=4
+        )
+        quant = matmul_nbits_quantizer.MatMulNBitsQuantizer(
+            model,
+            nodes_to_exclude=None,  # specify a list of nodes to exclude from quantization
+            nodes_to_include=None,  # specify a list of nodes to force include from quantization
+            algo_config=quant_config,)
+        quant.process()
+        quant.model.save_model_to_file(output_path)
+        logger.info(f"I4 quantization done for: {output_path}")
+        return output_path
+
     # INT8 quantization for specific models, do not quant for vits or ssl
-    if use_int8_quant and ("g2p" in file_path.lower() or "decoder" in output_lower):
+    if use_quant and ("decoder" in output_lower):
         quantize_dynamic(
             model,
             output_path,
             op_types_to_quantize=["MatMul", "Attention", "Gather"],
+            per_channel=True,
+            reduce_range=True
         )
-        logger.info(f"INT8 quantization done for: {output_path}")
+        logger.info(f"I8 quantization done for: {output_path}")
     else:
         onnx.save(model, output_path)
 
@@ -145,7 +188,8 @@ def main():
 
     # Process each model
     for file_path in onnx_files:
-        output_path = os.path.join(args.output_dir, os.path.basename(file_path))
+        output_path = os.path.join(
+            args.output_dir, os.path.basename(file_path))
         final_path = process_model(file_path, output_path, not args.no_quant)
         logger.info(f"Optimization complete for: {final_path}")
 

@@ -211,7 +211,7 @@ class VitsModel(nn.Module):
         )
         self.vq_model.eval()
         self.vq_model.load_state_dict(dict_s2["weight"], strict=False)
-        # self.vq_model.dec.remove_weight_norm()
+        self.vq_model.dec.remove_weight_norm()
         
     def forward(self, text_seq, pred_semantic, ref_audio):
         refer = spectrogram_torch(
