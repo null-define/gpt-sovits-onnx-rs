@@ -43,46 +43,143 @@ fn cleanup_text(text: &str) -> String {
     CLEANUP_REGEX.replace_all(text, " ").into_owned()
 }
 
-
-pub fn split_text(text: &str, max_chunk_size: usize) -> Vec<String> {
+/// Splits text into chunks optimized for BERT, ensuring chunks and sentences are neither too long nor too short.
+pub fn split_text(
+    text: &str,
+    max_chunk_size: usize,
+    min_chunk_size: usize,
+    target_sentence_size: usize,
+) -> Vec<String> {
     if text.is_empty() {
         return vec![];
     }
+
     debug!("split before: {:?}", text);
-    // let re = Regex::new(r"([。.?！!；;\n])").unwrap(); // Capture punctuation
-    let mut chunks = Vec::new();
-    let mut current_chunk = String::new();
+
+    // Step 1: Split text into sentences
+    let mut sentences = Vec::new();
     let mut last_end = 0;
 
-    // Iterate through matches to include punctuation in chunks
     for mat in SENTENCE_END_REGEX.find_iter(text) {
         let segment = &text[last_end..mat.start()];
         let punct = mat.as_str();
-        current_chunk.push_str(segment);
-        current_chunk.push_str(punct);
-
-        // Check if chunk exceeds max_chunk_size or ends with punctuation
-        if current_chunk.len() >= max_chunk_size {
-            let trimmed = current_chunk.trim();
-            if !trimmed.is_empty() {
-                chunks.push(trimmed.to_string());
-            }
-            current_chunk.clear();
-        } else if !current_chunk.trim().is_empty() {
-            chunks.push(current_chunk.trim().to_string());
-            current_chunk.clear();
+        let sentence = format!("{}{}", segment, punct);
+        if !sentence.trim().is_empty() {
+            sentences.push(sentence);
         }
-
         last_end = mat.end();
     }
 
-    // Handle any remaining text after the last punctuation
+    // Handle remaining text
     if last_end < text.len() {
-        current_chunk.push_str(&text[last_end..]);
-        let trimmed = current_chunk.trim();
-        if !trimmed.is_empty() {
-            chunks.push(trimmed.to_string());
+        let remaining = &text[last_end..];
+        if !remaining.trim().is_empty() {
+            sentences.push(remaining.to_string());
         }
+    }
+
+    // Step 2: Optimize sentence lengths
+    let mut optimized_sentences = Vec::new();
+    for sentence in sentences {
+        let char_count = sentence.chars().count();
+        let is_chinese = str_is_chinese(&sentence);
+
+        // Adjust target size based on language (Chinese: 1 char ≈ 1 token, English: ~2 chars/token)
+        let target_chars = if is_chinese {
+            target_sentence_size
+        } else {
+            target_sentence_size * 2
+        };
+        let max_chars = target_chars * 3 / 2;
+        let min_chars = target_sentence_size / 2;
+
+        if char_count > max_chars {
+            // Split long sentences
+            let words = if is_chinese {
+                sentence
+                    .chars()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<String>>()
+            } else {
+                sentence
+                    .split_whitespace()
+                    .map(|w| w.to_string())
+                    .collect::<Vec<String>>()
+            };
+            let words_per_split = (words.len() as f32
+                / (char_count as f32 / target_chars as f32).ceil())
+            .ceil() as usize;
+            for i in (0..words.len()).step_by(words_per_split) {
+                let chunk = words[i..std::cmp::min(i + words_per_split, words.len())]
+                    .join(if is_chinese { "" } else { " " });
+                if !chunk.trim().is_empty() {
+                    optimized_sentences.push(chunk);
+                }
+            }
+        } else if char_count >= min_chars {
+            // Keep sentences of reasonable length
+            optimized_sentences.push(sentence);
+        } else {
+            // Short sentences will be merged in the next step
+            optimized_sentences.push(sentence);
+        }
+    }
+
+    // Step 3: Merge sentences into chunks
+    let mut chunks = Vec::new();
+    let mut current_chunk = String::new();
+    let mut current_char_count = 0;
+
+    for sentence in optimized_sentences {
+        let sentence_chars = sentence.chars().count();
+        let is_chinese = str_is_chinese(&sentence);
+        // Estimate tokens: Chinese (1 char ≈ 1 token), English (2 chars ≈ 1 token)
+        let sentence_tokens = if is_chinese {
+            sentence_chars
+        } else {
+            sentence_chars / 2
+        };
+
+        // Check if adding sentence exceeds max_chunk_size (in estimated tokens)
+        if current_char_count + sentence_tokens <= max_chunk_size {
+            if !current_chunk.is_empty() {
+                current_chunk.push(' ');
+            }
+            current_chunk.push_str(&sentence);
+            current_char_count += sentence_tokens;
+        } else {
+            // Finalize current chunk if it meets minimum size
+            if current_char_count >= min_chunk_size && !current_chunk.trim().is_empty() {
+                chunks.push(current_chunk.trim().to_string());
+            }
+            // Start new chunk
+            current_chunk = sentence;
+            current_char_count = sentence_tokens;
+        }
+    }
+
+    // Handle the last chunk
+    if current_char_count >= min_chunk_size && !current_chunk.trim().is_empty() {
+        chunks.push(current_chunk.trim().to_string());
+    } else if !current_chunk.is_empty() && !chunks.is_empty() {
+        // Merge small final chunk with last chunk if possible
+        let last_chunk = format!("{} {}", chunks.pop().unwrap(), current_chunk.trim());
+        let last_char_count = last_chunk.chars().count();
+        let last_tokens = if str_is_chinese(&last_chunk) {
+            last_char_count
+        } else {
+            last_char_count / 2
+        };
+        if last_tokens <= max_chunk_size {
+            chunks.push(last_chunk);
+        } else {
+            chunks.push(last_chunk.trim().to_string());
+            if !current_chunk.trim().is_empty() {
+                chunks.push(current_chunk.trim().to_string());
+            }
+        }
+    } else if !current_chunk.trim().is_empty() {
+        chunks.push(current_chunk.trim().to_string());
     }
 
     debug!("chunks {:?}", chunks);
@@ -125,7 +222,6 @@ impl SentenceProcessor for ZhSentence {
         &self.word2ph
     }
 }
-
 pub struct TextProcessor {
     pub jieba: Arc<Jieba>,
     pub g2pw: G2PW,
@@ -153,7 +249,8 @@ impl TextProcessor {
         }
 
         let cleaned_text = cleanup_text(text);
-        let chunks = split_text(&cleaned_text, 64);
+        // Set max_chunk_size to 400 tokens, min to 50, target sentence to 20 tokens
+        let chunks = split_text(&cleaned_text, 400, 50, 20);
         let mut result = Vec::with_capacity(chunks.len().min(100));
 
         for chunk in chunks.iter() {
@@ -219,26 +316,6 @@ impl TextProcessor {
             Sentence::En(en) => en
                 .g2p(&mut self.g2p_en)
                 .context("Failed to process English G2P")?,
-            Sentence::Num(num) => {
-                let mut phone_seq = Vec::with_capacity(64);
-                let mut bert_features: Option<Array2<f32>> = None;
-                for sub_sentence in num
-                    .to_phone_sentence()
-                    .context("Failed to convert number to phone sentence")?
-                {
-                    let (sub_phone_seq, sub_bert) = self.process_sentence(sub_sentence, lang_id)?;
-                    phone_seq.extend(sub_phone_seq);
-                    bert_features = Some(match bert_features {
-                        Some(existing) => concatenate![Axis(0), existing, sub_bert],
-                        None => sub_bert,
-                    });
-                }
-                let seq_len = phone_seq.len();
-                return Ok((
-                    phone_seq,
-                    bert_features.unwrap_or_else(|| Array2::zeros((seq_len, 1024))),
-                ));
-            }
         }
 
         let (phone_seq, text, word2ph) = match &sentence {
@@ -297,7 +374,6 @@ fn parse_punctuation(p: &str) -> Option<&'static str> {
 enum Sentence {
     Zh(ZhSentence),
     En(EnSentence),
-    Num(NumSentence),
 }
 
 struct PhoneBuilder {
@@ -312,16 +388,28 @@ impl PhoneBuilder {
     }
 
     fn extend_text(&mut self, jieba: &Jieba, text: &str) {
+        let mut prev_lang = Lang::Zh;
         for t in jieba.cut(text, true) {
             match parse_punctuation(t) {
                 Some(p) => self.push_punctuation(p),
                 None => {
                     if is_numeric(t) {
-                        self.push_num_word(t);
+                        // self.push_num_word(t);
+                        let ns: NumSentence = NumSentence {
+                            text: t.to_owned(),
+                            lang: prev_lang,
+                        };
+                        let txt = ns.to_lang_text().unwrap_or("".into());
+                        match prev_lang {
+                            Lang::Zh => self.push_zh_word(&txt),
+                            Lang::En => self.push_en_word(&txt),
+                        }
                     } else if utils::str_is_chinese(t) {
                         self.push_zh_word(t);
+                        prev_lang = Lang::Zh;
                     } else if t.is_ascii() && !t.trim().is_empty() {
                         self.push_en_word(t);
+                        prev_lang = Lang::En;
                     } else {
                         info!("Skipping invalid word: {} in {}", t, text);
                     }
@@ -348,17 +436,6 @@ impl PhoneBuilder {
                 }
                 en.text.push(EnWord::Punctuation(p));
             }
-            Some(Sentence::Num(n)) => {
-                if n.need_drop() {
-                    self.sentences.pop_back();
-                }
-                self.sentences.push_back(Sentence::En(EnSentence {
-                    phone_ids: Vec::with_capacity(16),
-                    phones: Vec::with_capacity(16),
-                    text: vec![EnWord::Punctuation(p)],
-                    word2ph: Vec::with_capacity(16),
-                }));
-            }
             _ => {
                 debug!("Skipping punctuation: {}", p);
             }
@@ -383,15 +460,6 @@ impl PhoneBuilder {
                     }
                 }
                 en.text.push(EnWord::Word(word));
-            }
-            Some(Sentence::Num(n)) if n.need_drop() => {
-                let pop = self.sentences.pop_back().unwrap();
-                if let Sentence::Num(n) = pop {
-                    if n.is_link_symbol() {
-                        self.push_punctuation("-");
-                    }
-                }
-                self.push_en_word(&word);
             }
             _ => {
                 let en = EnSentence {
@@ -425,10 +493,6 @@ impl PhoneBuilder {
 
         match self.sentences.back_mut() {
             Some(Sentence::Zh(zh)) => add_zh_word(zh, word),
-            Some(Sentence::Num(n)) if n.need_drop() => {
-                self.sentences.pop_back();
-                self.push_zh_word(word);
-            }
             _ => {
                 let mut zh = ZhSentence {
                     phone_ids: Vec::with_capacity(16),
@@ -438,26 +502,6 @@ impl PhoneBuilder {
                 };
                 add_zh_word(&mut zh, word);
                 self.sentences.push_back(Sentence::Zh(zh));
-            }
-        }
-    }
-
-    fn push_num_word(&mut self, word: &str) {
-        let lang = match self.sentences.back() {
-            Some(Sentence::En(_)) => Lang::En,
-            Some(Sentence::Num(n)) => n.lang,
-            _ => Lang::Zh,
-        };
-
-        match self.sentences.back_mut() {
-            Some(Sentence::Num(num)) => {
-                num.text.push_str(word);
-            }
-            _ => {
-                self.sentences.push_back(Sentence::Num(NumSentence {
-                    text: word.to_string(),
-                    lang,
-                }));
             }
         }
     }

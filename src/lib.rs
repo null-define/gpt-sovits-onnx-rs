@@ -321,7 +321,6 @@ impl TTSModel {
             valid_len = new_valid_len;
 
             if idx >= 1500 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS) {
-                y_vec.pop();
                 let full_len = y_vec.len();
                 let sliced = y_vec
                     .split_off(full_len - idx)
@@ -329,8 +328,8 @@ impl TTSModel {
                     .map(|i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .collect::<Vec<i64>>();
                 let y = ArrayD::from_shape_vec(IxDyn(&[1, 1, sliced.len()]), sliced)?;
-                // debug!("t2s final full_len {},  idx: {}", full_len, idx);
-                // debug!("prefix_len: {}", prefix_len);
+                debug!("t2s final full_len {},  idx: {}", full_len, idx);
+                debug!("prefix_len: {}", prefix_len);
                 return Ok(y);
             }
             idx += 1;
@@ -368,6 +367,7 @@ impl TTSModel {
 
         let stream = stream! {
             for (text, seq, bert) in texts_and_seqs {
+                debug!("process: {:?}", text);
                 match self.in_stream_once_gen(&text, &bert, &seq, &ref_data, sampling_param).await {
                     Ok(samples) => {
                         for sample in samples {

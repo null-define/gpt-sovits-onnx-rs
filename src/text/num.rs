@@ -3,30 +3,26 @@ use std::collections::LinkedList;
 use anyhow::Result;
 use pest::Parser;
 
-use crate::{
-    text::Lang,
-    text::{PhoneBuilder, Sentence},
-};
+use crate::text::Lang;
 
 #[derive(pest_derive::Parser)]
 #[grammar = "resource/rule.pest"]
 pub struct ExprParser;
 
 pub mod zh {
-    use crate::text::PhoneBuilder;
 
     use super::*;
 
     use pest::iterators::Pair;
 
-    fn parse_pn(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_pn(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::pn);
         match pair.as_str() {
-            "+" => builder.push_zh_word("加"),
-            "-" => builder.push_zh_word("减"),
-            "*" | "×" => builder.push_zh_word("乘"),
-            "/" | "÷" => builder.push_zh_word("除以"),
-            "=" => builder.push_zh_word("等于"),
+            "+" => dst_string.push_str("加"),
+            "-" => dst_string.push_str("减"),
+            "*" | "×" => dst_string.push_str("乘"),
+            "/" | "÷" => dst_string.push_str("除以"),
+            "=" => dst_string.push_str("等于"),
             _ => {
                 #[cfg(debug_assertions)]
                 unreachable!("unknown: {:?} in pn", pair);
@@ -35,11 +31,11 @@ pub mod zh {
         Ok(())
     }
 
-    fn parse_flag(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_flag(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::flag);
         match pair.as_str() {
-            "+" => builder.push_zh_word("正"),
-            "-" => builder.push_zh_word("负"),
+            "+" => dst_string.push_str("正"),
+            "-" => dst_string.push_str("负"),
             _ => {
                 #[cfg(debug_assertions)]
                 unreachable!("unknown: {:?} in flag", pair);
@@ -48,17 +44,17 @@ pub mod zh {
         Ok(())
     }
 
-    fn parse_percent(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_percent(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::percent);
         // percent = { (decimals|integer)~"%" }
 
-        builder.push_zh_word("百分之");
+        dst_string.push_str("百分之");
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::decimals => parse_decimals(pair, builder)?,
+                Rule::decimals => parse_decimals(pair, dst_string)?,
                 Rule::integer => {
-                    parse_integer(pair, builder, true)?;
+                    parse_integer(pair, dst_string, true)?;
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -74,7 +70,7 @@ pub mod zh {
 
     fn parse_integer(
         pair: Pair<Rule>,
-        builder: &mut PhoneBuilder,
+        dst_string: &mut String,
         unit: bool,
     ) -> anyhow::Result<LinkedList<(&'static str, &'static str)>> {
         assert_eq!(pair.as_rule(), Rule::integer);
@@ -114,7 +110,7 @@ pub mod zh {
         }
 
         if r.iter().all(|(s, _)| s == &"零") {
-            builder.push_zh_word("零");
+            dst_string.push_str("零");
             return Ok(r);
         }
 
@@ -125,68 +121,67 @@ pub mod zh {
                     continue;
                 }
                 if s == &"零" {
-                    builder.push_zh_word(s);
+                    dst_string.push_str(s);
                     last_is_zero = true;
                 } else {
-                    builder.push_zh_word(s);
-                    builder.push_zh_word(u);
+                    dst_string.push_str(s);
+                    dst_string.push_str(u);
                     last_is_zero = false;
                 }
             }
         } else {
             for (s, _) in &r {
-                builder.push_zh_word(s);
+                dst_string.push_str(s);
             }
         }
 
         Ok(r)
     }
 
-    fn parse_decimals(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_decimals(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::decimals);
 
         let mut inner = pair.into_inner().rev();
         let f_part = inner.next().unwrap();
         if let Some(i_part) = inner.next() {
-            parse_integer(i_part, builder, true)?;
+            parse_integer(i_part, dst_string, true)?;
         } else {
-            builder.push_zh_word("零");
+            dst_string.push_str("零");
         }
-        builder.push_zh_word("点");
-        parse_integer(f_part, builder, false)?;
+        dst_string.push_str("点");
+        parse_integer(f_part, dst_string, false)?;
 
         Ok(())
     }
 
-    fn parse_fractional(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_fractional(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::fractional);
 
         let mut inner = pair.into_inner();
         let numerator = inner.next().unwrap();
         let denominator = inner.next().unwrap();
-        parse_integer(denominator, builder, true)?;
-        builder.push_zh_word("分之");
-        parse_integer(numerator, builder, true)?;
-
+        parse_integer(denominator, dst_string, true)?;
+        dst_string.push_str("分之");
+        parse_integer(numerator, dst_string, true)?;
         Ok(())
     }
 
-    fn parse_num(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_num(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::num);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::flag => parse_flag(pair, builder)?,
-                Rule::percent => parse_percent(pair, builder)?,
+                Rule::flag => parse_flag(pair, dst_string)?,
+                Rule::percent => parse_percent(pair, dst_string)?,
                 Rule::decimals => {
-                    parse_decimals(pair, builder)?;
+                    parse_decimals(pair, dst_string)?;
                 }
                 Rule::fractional => {
-                    parse_fractional(pair, builder)?;
+                    parse_fractional(pair, dst_string)?;
                 }
                 Rule::integer => {
-                    parse_integer(pair, builder, true)?;
+                    parse_integer(pair, dst_string, true)?;
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -197,15 +192,15 @@ pub mod zh {
         Ok(())
     }
 
-    fn parse_signs(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_signs(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::signs);
 
         let inner = pair.into_inner();
         for pair in inner {
             log::debug!("{:?}", pair);
             match pair.as_rule() {
-                Rule::num => parse_num(pair, builder)?,
-                Rule::pn => parse_pn(pair, builder)?,
+                Rule::num => parse_num(pair, dst_string)?,
+                Rule::pn => parse_pn(pair, dst_string)?,
                 Rule::word => {
                     log::warn!("word: {:?}", pair.as_str());
                 }
@@ -218,18 +213,18 @@ pub mod zh {
         Ok(())
     }
 
-    fn parse_link(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_link(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::link);
 
         match pair.as_str() {
-            "-" => builder.push_zh_word("杠"),
-            _ => builder.push_punctuation("…"),
+            "-" => dst_string.push_str("杠"),
+            _ => dst_string.push_str(""),
         }
 
         Ok(())
     }
 
-    fn parse_word(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_word(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::word);
         let inner = pair.into_inner();
         for pair in inner {
@@ -254,11 +249,11 @@ pub mod zh {
                             n
                         }
                     };
-                    builder.push_zh_word(txt);
+                    dst_string.push_str(txt);
                 }
                 Rule::alpha => {
                     let txt = pair.as_str();
-                    builder.push_en_word(txt);
+                    dst_string.push_str(txt);
                 }
                 Rule::greek => {
                     let txt = match pair.as_str() {
@@ -293,7 +288,7 @@ pub mod zh {
                             ""
                         }
                     };
-                    builder.push_zh_word(txt);
+                    dst_string.push_str(txt);
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -304,14 +299,14 @@ pub mod zh {
         Ok(())
     }
 
-    fn parse_ident(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_ident(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::ident);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::word => parse_word(pair, builder)?,
-                Rule::link => parse_link(pair, builder)?,
+                Rule::word => parse_word(pair, dst_string)?,
+                Rule::link => parse_link(pair, dst_string)?,
                 _ => {
                     #[cfg(debug_assertions)]
                     unreachable!("unknown: {:?} in ident", pair.as_str());
@@ -321,14 +316,14 @@ pub mod zh {
         Ok(())
     }
 
-    pub fn parse_all(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    pub fn parse_all(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::all);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::signs => parse_signs(pair, builder)?,
-                Rule::ident => parse_ident(pair, builder)?,
+                Rule::signs => parse_signs(pair, dst_string)?,
+                Rule::ident => parse_ident(pair, dst_string)?,
                 _ => {
                     #[cfg(debug_assertions)]
                     unreachable!("unknown: {:?} in all", pair.as_str());
@@ -340,59 +335,54 @@ pub mod zh {
 }
 
 pub mod en {
-    use crate::text::PhoneBuilder;
-
     use super::*;
 
     use pest::iterators::Pair;
 
     const SEPARATOR: &'static str = " ";
 
-    fn parse_pn(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_pn(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::pn);
         match pair.as_str() {
-            "+" => builder.push_en_word("plus"),
-            "-" => builder.push_en_word("minus"),
-            "*" | "×" => builder.push_en_word("times"),
+            "+" => dst_string.push_str("plus"),
+            "-" => dst_string.push_str("minus"),
+            "*" | "×" => dst_string.push_str("times"),
             "/" | "÷" => {
-                builder.push_en_word("divided");
-                builder.push_punctuation(SEPARATOR);
-                builder.push_en_word("by");
+                dst_string.push_str("divided");
+                dst_string.push_str("by");
             }
-            "=" => builder.push_en_word("is"),
+            "=" => dst_string.push_str("is"),
             _ => {
                 #[cfg(debug_assertions)]
                 unreachable!("unknown: {:?} in pn", pair);
             }
         }
-        builder.push_punctuation(SEPARATOR);
 
         Ok(())
     }
 
-    fn parse_flag(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_flag(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::flag);
         match pair.as_str() {
-            "-" => builder.push_en_word("negative"),
+            "-" => dst_string.push_str("negative"),
             _ => {
                 #[cfg(debug_assertions)]
                 unreachable!("unknown: {:?} in flag", pair);
             }
         }
-        builder.push_punctuation(SEPARATOR);
         Ok(())
     }
 
-    fn parse_percent(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_percent(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::percent);
         // percent = { (decimals|integer)~"%" }
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::decimals => parse_decimals(pair, builder)?,
+                Rule::decimals => parse_decimals(pair, dst_string)?,
                 Rule::integer => {
-                    parse_integer(pair, builder, true)?;
+                    parse_integer(pair, dst_string, true)?;
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -400,23 +390,17 @@ pub mod en {
                 }
             }
         }
-        builder.push_en_word("percent");
-        builder.push_punctuation(SEPARATOR);
+        dst_string.push_str("percent");
 
         Ok(())
     }
 
-    fn parse_integer(
-        pair: Pair<Rule>,
-        builder: &mut PhoneBuilder,
-        unit: bool,
-    ) -> anyhow::Result<()> {
+    fn parse_integer(pair: Pair<Rule>, dst_string: &mut String, unit: bool) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::integer);
         if unit {
             if let Ok(r) = num2en::str_to_words(pair.as_str()) {
                 r.split(&[' ', '-']).for_each(|s| {
-                    builder.push_en_word(s);
-                    builder.push_punctuation(SEPARATOR);
+                    dst_string.push_str(s);
                 });
                 return Ok(());
             }
@@ -442,19 +426,17 @@ pub mod en {
                     n
                 }
             };
-            builder.push_en_word(txt);
-            builder.push_punctuation(SEPARATOR);
+            dst_string.push_str(txt);
         }
 
         Ok(())
     }
 
-    fn parse_decimals(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_decimals(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::decimals);
         if let Ok(r) = num2en::str_to_words(pair.as_str()) {
             r.split(&[' ', '-']).for_each(|s| {
-                builder.push_en_word(s);
-                builder.push_punctuation(SEPARATOR);
+                dst_string.push_str(s);
             });
             return Ok(());
         }
@@ -462,49 +444,46 @@ pub mod en {
         let mut inner = pair.into_inner().rev();
         let f_part = inner.next().unwrap();
         if let Some(i_part) = inner.next() {
-            parse_integer(i_part, builder, true)?;
+            parse_integer(i_part, dst_string, true)?;
         } else {
-            builder.push_en_word("zero");
-            builder.push_punctuation(SEPARATOR);
+            dst_string.push_str("zero");
         }
-        builder.push_en_word("point");
-        builder.push_punctuation(SEPARATOR);
+        dst_string.push_str("point");
 
-        parse_integer(f_part, builder, false)?;
+        parse_integer(f_part, dst_string, false)?;
 
         Ok(())
     }
 
-    fn parse_fractional(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_fractional(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::fractional);
 
         let mut inner = pair.into_inner();
         let numerator = inner.next().unwrap();
         let denominator = inner.next().unwrap();
-        parse_integer(numerator, builder, true)?;
-        builder.push_en_word("over");
-        builder.push_punctuation(SEPARATOR);
-        parse_integer(denominator, builder, true)?;
+        parse_integer(numerator, dst_string, true)?;
+        dst_string.push_str("over");
+        parse_integer(denominator, dst_string, true)?;
 
         Ok(())
     }
 
-    fn parse_num(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_num(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::num);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::flag => parse_flag(pair, builder)?,
-                Rule::percent => parse_percent(pair, builder)?,
+                Rule::flag => parse_flag(pair, dst_string)?,
+                Rule::percent => parse_percent(pair, dst_string)?,
                 Rule::decimals => {
-                    parse_decimals(pair, builder)?;
+                    parse_decimals(pair, dst_string)?;
                 }
                 Rule::fractional => {
-                    parse_fractional(pair, builder)?;
+                    parse_fractional(pair, dst_string)?;
                 }
                 Rule::integer => {
-                    parse_integer(pair, builder, true)?;
+                    parse_integer(pair, dst_string, true)?;
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -515,14 +494,14 @@ pub mod en {
         Ok(())
     }
 
-    fn parse_signs(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_signs(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::signs);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::num => parse_num(pair, builder)?,
-                Rule::pn => parse_pn(pair, builder)?,
+                Rule::num => parse_num(pair, dst_string)?,
+                Rule::pn => parse_pn(pair, dst_string)?,
                 Rule::word => {
                     println!("word: {:?}", pair.as_str());
                 }
@@ -535,15 +514,13 @@ pub mod en {
         Ok(())
     }
 
-    fn parse_link(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_link(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::link);
-
-        builder.push_punctuation(SEPARATOR);
 
         Ok(())
     }
 
-    fn parse_word(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_word(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::word);
         let inner = pair.into_inner();
         for pair in inner {
@@ -567,12 +544,11 @@ pub mod en {
                             n
                         }
                     };
-                    builder.push_en_word(txt);
-                    builder.push_punctuation(SEPARATOR);
+                    dst_string.push_str(txt);
                 }
                 Rule::alpha => {
                     let txt = pair.as_str();
-                    builder.push_en_word(txt);
+                    dst_string.push_str(txt);
                 }
                 Rule::greek => {
                     let txt = match pair.as_str() {
@@ -608,8 +584,7 @@ pub mod en {
                             ""
                         }
                     };
-                    builder.push_en_word(txt);
-                    builder.push_punctuation(SEPARATOR);
+                    dst_string.push_str(txt);
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -620,14 +595,14 @@ pub mod en {
         Ok(())
     }
 
-    fn parse_ident(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    fn parse_ident(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::ident);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::word => parse_word(pair, builder)?,
-                Rule::link => parse_link(pair, builder)?,
+                Rule::word => parse_word(pair, dst_string)?,
+                Rule::link => parse_link(pair, dst_string)?,
                 _ => {
                     #[cfg(debug_assertions)]
                     unreachable!("unknown: {:?} in ident", pair.as_str());
@@ -637,14 +612,14 @@ pub mod en {
         Ok(())
     }
 
-    pub fn parse_all(pair: Pair<Rule>, builder: &mut PhoneBuilder) -> anyhow::Result<()> {
+    pub fn parse_all(pair: Pair<Rule>, dst_string: &mut String) -> anyhow::Result<()> {
         assert_eq!(pair.as_rule(), Rule::all);
 
         let inner = pair.into_inner();
         for pair in inner {
             match pair.as_rule() {
-                Rule::signs => parse_signs(pair, builder)?,
-                Rule::ident => parse_ident(pair, builder)?,
+                Rule::signs => parse_signs(pair, dst_string)?,
+                Rule::ident => parse_ident(pair, dst_string)?,
                 _ => {
                     #[cfg(debug_assertions)]
                     unreachable!("unknown: {:?} in all", pair.as_str());
@@ -672,16 +647,16 @@ impl NumSentence {
         self.text == "-"
     }
 
-    pub fn to_phone_sentence(&self) -> Result<LinkedList<Sentence>> {
-        let mut builder = PhoneBuilder::new();
+    pub fn to_lang_text(&self) -> Result<String> {
+        let mut dst_string = String::new();
         let pairs = ExprParser::parse(Rule::all, &self.text)?;
         for pair in pairs {
             match self.lang {
-                Lang::Zh => zh::parse_all(pair, &mut builder)?,
-                Lang::En => en::parse_all(pair, &mut builder)?
+                Lang::Zh => zh::parse_all(pair, &mut dst_string)?,
+                Lang::En => en::parse_all(pair, &mut dst_string)?,
             }
         }
-        Ok(builder.sentences)
+        Ok(dst_string)
     }
 }
 
