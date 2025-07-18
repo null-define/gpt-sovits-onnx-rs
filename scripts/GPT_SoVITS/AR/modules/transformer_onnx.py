@@ -188,6 +188,8 @@ class TransformerEncoderLayer(nn.Module):
             self.norm1 = norm1
             self.norm2 = norm2
 
+        self.hidden_dim = d_model
+
     def __setstate__(self, state):
         super(TransformerEncoderLayer, self).__setstate__(state)
         if not hasattr(self, "activation"):
@@ -195,42 +197,38 @@ class TransformerEncoderLayer(nn.Module):
 
     def forward(
         self,
-        src: Tensor,
+        x: Tensor,
         src_mask: Optional[Tensor] = None,
         src_key_padding_mask: Optional[Tensor] = None,
         k_cache: Optional[Tensor] = None,
         v_cache: Optional[Tensor] = None,
         first_infer: bool = True,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        stage_embedding = None
-        x, k, v = self._sa_block(src, src_mask, src_key_padding_mask, k_cache, v_cache, first_infer)
-        x = self.norm1(src + x , stage_embedding)
-        x = self.norm2(x + self._ff_block(x), stage_embedding)
-        return x, k, v
-
-    def _sa_block(
-        self,
-        x: Tensor,
-        attn_mask: Optional[Tensor],
-        key_padding_mask: Optional[Tensor],
-        k_cache: Optional[Tensor],
-        v_cache: Optional[Tensor],
-        first_infer: bool,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        x, k, v = self.self_attn(
+        attn, k, v = self.self_attn(
             x,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
             need_weights=False,
             k_cache=k_cache,
             v_cache=v_cache,
             first_infer=first_infer,
         )
-        return x, k, v
 
-    def _ff_block(self, x: Tensor) -> Tensor:
-        x = self.linear2(self.activation(self.linear1(x)))
-        return x
+        x = x + attn
+        x = F.layer_norm(x, [self.hidden_dim], self.norm1.weight , self.norm1.bias, self.norm1.eps)
+        x = x + self.linear2(F.relu(self.linear1(x)))
+        x = F.layer_norm(
+            x,
+            [self.hidden_dim],
+            self.norm2.weight,
+            self.norm2.bias,
+            self.norm2.eps,
+        )
+
+
+        # x = self.norm1(atten + x , stage_embedding)
+        # x = self.norm2(x + self.linear2(self.activation(self.linear1(x))), stage_embedding)
+        return x, k, v
 
 class AdaptiveLayerNorm(nn.Module):
     def __init__(self, d_model, norm) -> None:

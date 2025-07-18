@@ -236,8 +236,8 @@ impl TTSModel {
 
             for i in 0..self.num_layers {
                 // Create a view of the valid part of the cache
-                let k_view = k_caches[i].slice(s![0..valid_len, .., ..]);
-                let v_view = v_caches[i].slice(s![0..valid_len, .., ..]);
+                let k_view = k_caches[i].slice(s![..,0..valid_len, ..]);
+                let v_view = v_caches[i].slice(s![..,0..valid_len, ..]);
 
                 inputs.push((
                     format!("ik_cache_{}", i).into(),
@@ -264,11 +264,11 @@ impl TTSModel {
             let new_valid_len = valid_len + 1;
 
             // Check if we need to reallocate BEFORE writing to the new index.
-            if new_valid_len > k_caches[0].shape()[0] {
+            if new_valid_len > k_caches[0].shape()[1] {
                 info!(
                     "Reallocating KV cache from {} to {}",
-                    k_caches[0].shape()[0],
-                    k_caches[0].shape()[0] + CACHE_REALLOC_INCREMENT
+                    k_caches[0].shape()[1],
+                    k_caches[0].shape()[1] + CACHE_REALLOC_INCREMENT
                 );
                 for i in 0..self.num_layers {
                     let old_k = &k_caches[i];
@@ -276,20 +276,20 @@ impl TTSModel {
 
                     // Create new, larger arrays
                     let mut new_k_dims = old_k.raw_dim().clone();
-                    new_k_dims[0] += CACHE_REALLOC_INCREMENT;
+                    new_k_dims[1] += CACHE_REALLOC_INCREMENT;
                     let mut new_v_dims = old_v.raw_dim().clone();
-                    new_v_dims[0] += CACHE_REALLOC_INCREMENT;
+                    new_v_dims[1] += CACHE_REALLOC_INCREMENT;
 
                     let mut new_k = Array::zeros(new_k_dims);
                     let mut new_v = Array::zeros(new_v_dims);
 
                     // Copy existing valid data to the new arrays
                     new_k
-                        .slice_mut(s![0..valid_len, ..])
-                        .assign(&old_k.slice(s![0..valid_len, .., ..]));
+                        .slice_mut(s![..,0..valid_len, ..])
+                        .assign(&old_k.slice(s![..,0..valid_len, ..]));
                     new_v
-                        .slice_mut(s![0..valid_len, ..])
-                        .assign(&old_v.slice(s![0..valid_len, .., ..]));
+                        .slice_mut(s![..,0..valid_len, ..])
+                        .assign(&old_v.slice(s![..,0..valid_len, ..]));
 
                     // Replace the old caches with the new, larger ones
                     k_caches[i] = new_k;
@@ -305,15 +305,15 @@ impl TTSModel {
                     output[format!("v_cache_{}", i)].try_extract_array::<KvDType>()?;
 
                 // The new data is the last row of the incremental output from the model
-                let k_new_slice = inc_k_cache.slice(s![valid_len, .., ..]);
-                let v_new_slice = inc_v_cache.slice(s![valid_len, .., ..]);
+                let k_new_slice = inc_k_cache.slice(s![..,valid_len, ..]);
+                let v_new_slice = inc_v_cache.slice(s![..,valid_len, ..]);
 
                 // Paste the new row into our long-running cache at the correct position
                 k_caches[i]
-                    .slice_mut(s![valid_len, .., ..])
+                    .slice_mut(s![..,valid_len, ..])
                     .assign(&k_new_slice);
                 v_caches[i]
-                    .slice_mut(s![valid_len, .., ..])
+                    .slice_mut(s![..,valid_len, ..])
                     .assign(&v_new_slice);
             }
 
@@ -434,11 +434,11 @@ impl TTSModel {
             // Get shape and initial data from the first-pass decoder.
             let k_init_first = fs_decoder_output["k_cache_0"].try_extract_array::<KvDType>()?;
             let initial_dims_dyn = k_init_first.raw_dim();
-            let initial_seq_len = initial_dims_dyn[0];
+            let initial_seq_len = initial_dims_dyn[1];
 
             // Define the shape for our large, pre-allocated cache.
             let mut large_cache_dims = initial_dims_dyn.clone();
-            large_cache_dims[0] = INITIAL_CACHE_SIZE;
+            large_cache_dims[1] = INITIAL_CACHE_SIZE;
 
             let mut k_caches = Vec::with_capacity(self.num_layers);
             let mut v_caches = Vec::with_capacity(self.num_layers);
@@ -455,10 +455,10 @@ impl TTSModel {
 
                 // Copy the initial data from the first-pass decoder into the start of our large caches.
                 k_large
-                    .slice_mut(s![0..initial_seq_len, .., ..])
+                    .slice_mut(s![..,0..initial_seq_len, ..])
                     .assign(&k_init);
                 v_large
-                    .slice_mut(s![0..initial_seq_len, .., ..])
+                    .slice_mut(s![..,0..initial_seq_len, ..])
                     .assign(&v_init);
 
                 k_caches.push(k_large);

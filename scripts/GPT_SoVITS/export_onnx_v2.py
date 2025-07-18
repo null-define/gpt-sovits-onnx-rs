@@ -149,8 +149,8 @@ class T2SModel(nn.Module):
 
 
         num_layers = self.t2s_model.num_layers
-        k_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(num_layers)]
-        v_cache = [torch.zeros((0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(num_layers)]
+        k_cache = [torch.zeros((1, 0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(num_layers)]
+        v_cache = [torch.zeros((1, 0, 1, 512), dtype=x.dtype, device=x.device) for _ in range(num_layers)]
 
         # Export first stage decoder
         torch.onnx.export(
@@ -164,9 +164,6 @@ class T2SModel(nn.Module):
                 "x": {1: "x_length"},
                 "prompts": {1: "prompts_length"},
                 "bert": {2: "bert_length"},
-                **{f"k_cache_{i}": {0: "k_length"} for i in range(num_layers)},
-                **{f"v_cache_{i}": {0: "v_length"} for i in range(num_layers)},
-                "logits": {1: "logits_length"},
             },
             verbose=False,
             opset_version=20
@@ -186,8 +183,8 @@ class T2SModel(nn.Module):
                          [f"v_cache_{i}" for i in range(num_layers)],
             dynamic_axes={
                 "iy": {1: "iy_length"},
-                **{f"ik_cache_{i}": {0: "ik_length"} for i in range(num_layers)},
-                **{f"iv_cache_{i}": {0: "iv_length"} for i in range(num_layers)},
+                **{f"ik_cache_{i}": {1: "kv_length"} for i in range(num_layers)},
+                **{f"iv_cache_{i}": {1: "kv_length"} for i in range(num_layers)},
             },
             verbose=False,
             opset_version=20

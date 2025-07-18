@@ -7,17 +7,16 @@ from module.modules import LayerNorm
 from typing import Optional
 
 class Encoder(nn.Module):
+    """Transformer encoder with multi-head attention and feed-forward layers."""
     def __init__(
         self,
-        hidden_channels,
-        filter_channels,
-        n_heads,
-        n_layers,
-        kernel_size=1,
-        p_dropout=0.0,
-        window_size=4,
-        isflow=False,
-        **kwargs,
+        hidden_channels: int,
+        filter_channels: int,
+        n_heads: int,
+        n_layers: int,
+        kernel_size: int = 1,
+        p_dropout: float = 0.0,
+        window_size: int = 4,
     ):
         super().__init__()
         self.hidden_channels = hidden_channels
@@ -28,7 +27,6 @@ class Encoder(nn.Module):
         self.p_dropout = p_dropout
         self.window_size = window_size
 
-        self.drop = nn.Dropout(p_dropout)
         self.attn_layers = nn.ModuleList([
             MultiHeadAttention(
                 hidden_channels,
@@ -50,47 +48,35 @@ class Encoder(nn.Module):
         ])
         self.norm_layers_2 = nn.ModuleList([LayerNorm(hidden_channels) for _ in range(n_layers)])
 
-    def forward(self, x, x_mask, g=None):
-        # Precompute attention mask once if static
+    def forward(self, x: torch.Tensor, x_mask: torch.Tensor) -> torch.Tensor:
         attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
-        
-        # Apply mask once at the start
         x = x * x_mask
         for attn, norm1, ffn, norm2 in zip(self.attn_layers, self.norm_layers_1, self.ffn_layers, self.norm_layers_2):
-            # Combine attention and FFN with single dropout
             residual = x
-            x = attn(x, x, attn_mask)
-            x = norm1(residual + self.drop(x))
-            
+            x = norm1(residual + attn(x, x, attn_mask))
             residual = x
-            x = ffn(x, x_mask)
-            x = norm2(residual + self.drop(x))
-        
+            x = norm2(residual + ffn(x, x_mask))
         return x * x_mask
 
 class MultiHeadAttention(nn.Module):
+    """Multi-head attention with optional relative positional embeddings."""
     def __init__(
         self,
-        channels,
-        out_channels,
-        n_heads,
-        p_dropout=0.0,
-        window_size=None,
-        heads_share=True,
-        block_length=None,
-        proximal_bias=False,
-        proximal_init=False,
+        channels: int,
+        out_channels: int,
+        n_heads: int,
+        p_dropout: float = 0.0,
+        window_size: Optional[int] = None,
+        proximal_init: bool = False,
     ):
         super().__init__()
-        assert channels % n_heads == 0
+        assert channels % n_heads == 0, f"Channels ({channels}) must be divisible by n_heads ({n_heads})"
 
         self.channels = channels
         self.out_channels = out_channels
         self.n_heads = n_heads
         self.k_channels = channels // n_heads
         self.window_size = window_size
-        self.heads_share = heads_share
-        self.proximal_bias = proximal_bias
 
         self.conv_q = nn.Conv1d(channels, channels, 1)
         self.conv_k = nn.Conv1d(channels, channels, 1)
@@ -99,10 +85,9 @@ class MultiHeadAttention(nn.Module):
         self.drop = nn.Dropout(p_dropout)
 
         if window_size is not None:
-            n_heads_rel = 1 if heads_share else n_heads
-            rel_stddev = self.k_channels**-0.5
-            self.emb_rel_k = nn.Parameter(torch.randn(n_heads_rel, window_size * 2 + 1, self.k_channels) * rel_stddev)
-            self.emb_rel_v = nn.Parameter(torch.randn(n_heads_rel, window_size * 2 + 1, self.k_channels) * rel_stddev)
+            rel_stddev = self.k_channels ** -0.5
+            self.emb_rel_k = nn.Parameter(torch.randn(1, window_size * 2 + 1, self.k_channels) * rel_stddev)
+            self.emb_rel_v = nn.Parameter(torch.randn(1, window_size * 2 + 1, self.k_channels) * rel_stddev)
 
         nn.init.xavier_uniform_(self.conv_q.weight)
         nn.init.xavier_uniform_(self.conv_k.weight)
@@ -112,12 +97,11 @@ class MultiHeadAttention(nn.Module):
                 self.conv_k.weight.copy_(self.conv_q.weight)
                 self.conv_k.bias.copy_(self.conv_q.bias)
 
-    def forward(self, x, c, attn_mask: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, c: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         q = self.conv_q(x)
         k = self.conv_k(c)
         v = self.conv_v(c)
-
-        x, _ = self.attention(q, k, v, mask=attn_mask)
+        x, _ = self.attention(q, k, v, attn_mask)
         return self.conv_o(x)
 
     def attention(self, query, key, value, mask: Optional[torch.Tensor] = None):
@@ -149,12 +133,12 @@ class MultiHeadAttention(nn.Module):
         output = output.transpose(2, 3).contiguous().view(b, d, -1)
         return output, p_attn
 
-    def _get_relative_embeddings(self, relative_embeddings, length):
-        max_relative_position = 2 * self.window_size + 1
+    def _get_relative_embeddings(self, relative_embeddings: torch.Tensor, length: int) -> torch.Tensor:
+        max_rel_pos = 2 * self.window_size + 1
         pad_length = max(length - (self.window_size + 1), 0)
         slice_start = max((self.window_size + 1) - length, 0)
         slice_end = slice_start + 2 * length - 1
-        
+
         if pad_length > 0:
             padded = F.pad(relative_embeddings, (0, 0, pad_length, pad_length))
         else:
@@ -168,7 +152,7 @@ class MultiHeadAttention(nn.Module):
         x_flat = F.pad(x_flat, (0, length - 1))
         return x_flat.view(batch, heads, length + 1, -1)[:, :, :length, length - 1:]
 
-    def _absolute_position_to_relative_position(self, x):
+    def _absolute_position_to_relative_position(self, x: torch.Tensor) -> torch.Tensor:
         batch, heads, length, _ = x.size()
         x = F.pad(x, (0, length - 1))
         x_flat = x.view(batch, heads, -1)
@@ -176,15 +160,16 @@ class MultiHeadAttention(nn.Module):
         return x_flat.view(batch, heads, length, -1)[:, :, :, 1:]
 
 class FFN(nn.Module):
+    """Feed-forward network with convolutional layers."""
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        filter_channels,
-        kernel_size,
-        p_dropout=0.0,
-        activation=None,
-        causal=False,
+        in_channels: int,
+        out_channels: int,
+        filter_channels: int,
+        kernel_size: int,
+        p_dropout: float = 0.0,
+        activation: str = "relu",
+        causal: bool = False,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -198,40 +183,35 @@ class FFN(nn.Module):
         self.conv_2 = nn.Conv1d(filter_channels, out_channels, kernel_size, padding=self._get_padding())
         self.drop = nn.Dropout(p_dropout)
 
-    def forward(self, x, x_mask):
+    def forward(self, x: torch.Tensor, x_mask: torch.Tensor) -> torch.Tensor:
         x = x * x_mask
         x = self.conv_1(x)
-        x = torch.relu(x) if self.activation != "gelu" else x * torch.sigmoid(1.702 * x)
+        x = F.gelu(x) if self.activation == "gelu" else torch.relu(x)
         x = self.drop(x)
         x = self.conv_2(x)
         return x * x_mask
 
-    def _get_padding(self):
+    def _get_padding(self) -> int:
         if self.kernel_size == 1:
             return 0
         return (self.kernel_size - 1) // 2 if not self.causal else self.kernel_size - 1
-    
 class MRTE(nn.Module):
     def __init__(
         self,
-        content_enc_channels=192,
-        hidden_size=512,
-        out_channels=192,
-        kernel_size=5,
-        n_heads=4,
-        ge_layer=2,
+        content_enc_channels: int = 192,
+        hidden_size: int = 512,
+        out_channels: int = 192,
+        n_heads: int = 4,
     ):
-        super(MRTE, self).__init__()
+        super().__init__()
         self.cross_attention = MultiHeadAttention(hidden_size, hidden_size, n_heads)
         self.c_pre = nn.Conv1d(content_enc_channels, hidden_size, 1)
         self.text_pre = nn.Conv1d(content_enc_channels, hidden_size, 1)
         self.c_post = nn.Conv1d(hidden_size, out_channels, 1)
 
-    def forward(self, ssl_enc, ssl_mask, text, text_mask, ge):
+    def forward(self, ssl_enc: torch.Tensor, ssl_mask: torch.Tensor, text: torch.Tensor, text_mask: torch.Tensor, ge: torch.Tensor) -> torch.Tensor:
         attn_mask = text_mask.unsqueeze(2) * ssl_mask.unsqueeze(-1)
-
         ssl_enc = self.c_pre(ssl_enc * ssl_mask)
         text_enc = self.text_pre(text * text_mask)
         x = self.cross_attention(ssl_enc * ssl_mask, text_enc * text_mask, attn_mask) + ssl_enc + ge
-        x = self.c_post(x * ssl_mask)
-        return x
+        return self.c_post(x * ssl_mask)

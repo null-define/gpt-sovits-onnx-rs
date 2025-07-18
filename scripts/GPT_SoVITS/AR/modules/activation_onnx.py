@@ -8,6 +8,8 @@ from torch.nn.init import constant_, xavier_normal_, xavier_uniform_
 from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
 from torch.nn.parameter import Parameter
 
+from torch.nn import functional as F
+
 from AR.modules.patched_mha_with_cache_onnx import multi_head_attention_forward_patched
 
 
@@ -38,16 +40,18 @@ class MultiheadAttention(Module):
         self.kdim = kdim if kdim is not None else embed_dim
         self.vdim = vdim if vdim is not None else embed_dim
         self._qkv_same_embed_dim = self.kdim == embed_dim and self.vdim == embed_dim
-
         self.num_heads = num_heads
         self.dropout = dropout
         self.batch_first = batch_first
         self.head_dim = embed_dim // num_heads
-        assert self.head_dim * num_heads == self.embed_dim, "embed_dim must be divisible by num_heads"
+        assert self.head_dim * \
+            num_heads == self.embed_dim, "embed_dim must be divisible by num_heads"
 
         if add_bias_kv:
-            self.bias_k = Parameter(torch.empty((1, 1, embed_dim), **factory_kwargs))
-            self.bias_v = Parameter(torch.empty((1, 1, embed_dim), **factory_kwargs))
+            self.bias_k = Parameter(torch.empty(
+                (1, 1, embed_dim), **factory_kwargs))
+            self.bias_v = Parameter(torch.empty(
+                (1, 1, embed_dim), **factory_kwargs))
         else:
             self.bias_k = self.bias_v = None
 
@@ -72,10 +76,12 @@ class MultiheadAttention(Module):
                 self.register_parameter("v_proj_weight", None)
 
             if bias:
-                self.in_proj_bias = Parameter(torch.empty(3 * embed_dim, **factory_kwargs))
+                self.in_proj_bias = Parameter(
+                    torch.empty(3 * embed_dim, **factory_kwargs))
             else:
                 self.register_parameter("in_proj_bias", None)
-            self.out_proj = NonDynamicallyQuantizableLinear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+            self.out_proj = NonDynamicallyQuantizableLinear(
+                embed_dim, embed_dim, bias=bias, **factory_kwargs)
 
             self._reset_parameters()
         else:
@@ -148,51 +154,29 @@ class MultiheadAttention(Module):
         v_cache: Optional[Tensor] = None,
         first_infer: bool = True,
     ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
-        """
-        Forward pass with externalized KV cache handling.
-        
-        Args:
-            query: Query tensor.
-            key: Key tensor.
-            value: Value tensor.
-            key_padding_mask: Optional padding mask for keys.
-            need_weights: If True, return attention weights.
-            attn_mask: Optional attention mask.
-            average_attn_weights: If True, average attention weights over heads.
-            k_cache: Cached key tensor (shape: [src_len, bsz * num_heads, head_dim]).
-            v_cache: Cached value tensor (shape: [src_len, bsz * num_heads, head_dim]).
-            first_infer: If True, this is the first inference step (no cache concatenation).
+        batch_size = 1 # ONLY SUPPORT 1 NOW
+        q, k, v = F.linear(query, self.in_proj_weight,
+                         self.in_proj_bias).chunk(3, dim=-1)
 
-        Returns:
-            attn_output: Attention output tensor.
-            attn_weights: Attention weights if need_weights=True, else None.
-            k: Updated key tensor.
-            v: Updated value tensor.
-        """
-        query =  query.transpose(1, 0)
+        # Update key and value with cache
+        if k_cache is not None and v_cache is not None and not first_infer:
+            k_cache = torch.cat([k_cache, k], dim=1)
+            v_cache = torch.cat([v_cache, v], dim=1)
+        else:
+            k_cache = k
+            v_cache = v
+        q_len = q.shape[1]
+        kv_len = k_cache.shape[1]
+        q = q.view(batch_size, q_len, self.num_heads, -1).transpose(1, 2)
+        k = k_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
+        v = v_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
 
-        attn_output, k, v = multi_head_attention_forward_patched(
-            query,
-            self.embed_dim,
-            self.num_heads,
-            self.in_proj_weight,
-            self.in_proj_bias,
-            self.bias_k,
-            self.bias_v,
-            self.add_zero_attn,
-            self.dropout,
-            self.out_proj.weight,
-            self.out_proj.bias,
-            training=self.training,
-            key_padding_mask=key_padding_mask,
-            need_weights=need_weights,
-            attn_mask=attn_mask,
-            average_attn_weights=average_attn_weights,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            first_infer=first_infer,
-        )
+        if first_infer:
+            attn = F.scaled_dot_product_attention(q, k, v,  (~attn_mask))
+        else:
+            attn = F.scaled_dot_product_attention(q, k, v)
 
-        attn_output = attn_output.transpose(0, 1)
+        attn = attn.transpose(1, 2).reshape(batch_size, q_len, -1)
+        attn = F.linear(attn, self.out_proj.weight, self.out_proj.bias)
 
-        return attn_output, k, v
+        return attn, k_cache, v_cache

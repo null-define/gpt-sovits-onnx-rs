@@ -134,8 +134,8 @@ class T2SFirstStageDecoder(nn.Module):
                 (x_len, 0),
                 value=False,
             )
-        xy_attn_mask = torch.concat([x_attn_mask_pad, y_attn_mask], dim=0)
-        print("xy_attn_mask: ",xy_attn_mask)
+        src_len = x_len + y_len
+        xy_attn_mask = torch.concat([x_attn_mask_pad, y_attn_mask], dim=0).unsqueeze(0).expand(16, -1, -1) .view(1, 16, src_len, src_len)
         xy_dec, k_cache, v_cache = self.h(xy_pos, mask=xy_attn_mask, k_cache=None, v_cache=None, first_infer=True)
         logits = self.ar_predict_layer(xy_dec[:, -1])
         # samples = sample(logits[0], y,top_k=self.top_k, top_p = 1.0, temperature=1.0)[0].unsqueeze(0) # 避免句首不稳定
