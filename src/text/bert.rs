@@ -32,7 +32,7 @@ impl BertModel {
         word2ph: &[i32],
         total_phones: usize,
     ) -> anyhow::Result<Array2<f32>> {
-        if self.model.is_some() && self.tokenizers.is_some() && !text.is_ascii() {
+        if self.model.is_some() && self.tokenizers.is_some() {
             let tmp = self.get_real_bert(text, word2ph)?;
             debug!("use real bert, {}", text);
             if tmp.shape()[0] != total_phones {

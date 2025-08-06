@@ -10,6 +10,9 @@ use ort::{
     session::Session,
     value::{Tensor, TensorRef},
 };
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::time::SystemTime;
 use std::{fs::File, path::Path};
 use tokio::task::block_in_place;
@@ -171,7 +174,7 @@ impl TTSModel {
 
         self.ref_data = Some(ReferenceData {
             ref_seq,
-            ref_bert: ref_bert,
+            ref_bert,
             ref_audio_32k,
             ssl_content,
         });
@@ -260,6 +263,8 @@ impl TTSModel {
 
             y_vec.push(sampler.sample(&mut logits, &y_vec, &sampling_param));
 
+            let argmax = logits_sampler::argmax(&logits);
+
             // --- 3. Check for reallocation and update caches ---
             let new_valid_len = valid_len + 1;
 
@@ -320,16 +325,17 @@ impl TTSModel {
             // --- 4. Update valid length and check stop condition ---
             valid_len = new_valid_len;
 
-            if idx >= 1500 || y_vec.last().map_or(false, |&v| v == T2S_DECODER_EOS) {
-                let full_len = y_vec.len();
-                let sliced = y_vec
-                    .split_off(full_len - idx)
-                    .into_iter()
-                    .map(|i| if i == T2S_DECODER_EOS { 0 } else { i })
+            if idx >= 1500 || argmax == T2S_DECODER_EOS {
+                let sliced = y_vec[prefix_len + 1..]
+                    .iter()
+                    .map(|&i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .collect::<Vec<i64>>();
+                debug!(
+                    "t2s final len: {}, prefix_len: {}",
+                    sliced.len(),
+                    prefix_len
+                );
                 let y = ArrayD::from_shape_vec(IxDyn(&[1, 1, sliced.len()]), sliced)?;
-                debug!("t2s final full_len {},  idx: {}", full_len, idx);
-                debug!("prefix_len: {}", prefix_len);
                 return Ok(y);
             }
             idx += 1;
@@ -547,6 +553,30 @@ fn ensure_punctuation(text: &str) -> String {
     }
 }
 
+fn resample_audio(input: Vec<f32>, in_rate: u32, out_rate: u32) -> Result<Vec<f32>, GSVError> {
+    if in_rate == out_rate {
+        return Ok(input);
+    }
+    let mut resampler = SincFixedIn::new(
+        out_rate as f64 / in_rate as f64,
+        1.0,
+        SincInterpolationParameters {
+            sinc_len: 64,
+            f_cutoff: 0.95,
+            interpolation: SincInterpolationType::Cubic,
+            oversampling_factor: 16,
+            window: WindowFunction::BlackmanHarris2,
+        },
+        input.len(),
+        1,
+    )
+    .map_err(|e| GSVError::from(format!("Resampler creation failed: {}", e)))?;
+    let output = resampler
+        .process(&[input], None)
+        .map_err(|e| GSVError::from(format!("Resampling failed: {}", e)))?;
+    Ok(output[0].clone())
+}
+
 fn read_and_resample_audio<P: AsRef<Path>>(
     path: P,
 ) -> Result<(Array2<f32>, Array2<f32>), GSVError> {
@@ -554,7 +584,13 @@ fn read_and_resample_audio<P: AsRef<Path>>(
         .map_err(|e| GSVError::from(format!("Failed to open reference audio: {}", e)))?;
     let wav_reader = WavReader::new(file)?;
     let spec = wav_reader.spec();
-    debug!("spec:{:?}", spec);
+    debug!("Reference audio spec: {:?}", spec);
+
+    // Validate input audio format
+    if spec.channels != 1 || spec.sample_format != hound::SampleFormat::Int {
+        return Err(GSVError::from("Reference audio must be mono 16-bit PCM"));
+    }
+
     let audio_samples: Vec<f32> = wav_reader
         .into_samples::<i16>()
         .collect::<Result<Vec<i16>, _>>()?
@@ -562,52 +598,25 @@ fn read_and_resample_audio<P: AsRef<Path>>(
         .map(|s| s as f32 / i16::MAX as f32)
         .collect();
 
-    let mut ref_audio_16k = if spec.sample_rate != 16000 {
-        resample_audio(audio_samples.clone(), spec.sample_rate, 16000)?
-    } else {
-        audio_samples.clone()
-    };
-    // ref_audio_16k.extend(vec![0.0; (0.3 * 16000.0) as usize]); // this may hurt output quality
+    // Ensure audio is not too short
+    if audio_samples.len() < spec.sample_rate as usize / 2 {
+        return Err(GSVError::from(
+            "Reference audio too short, must be at least 0.5 seconds",
+        ));
+    }
+
+    // Resample to 16kHz and 32kHz
+    let mut ref_audio_16k = resample_audio(audio_samples.clone(), spec.sample_rate, 16000)?;
     let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
 
+    // Prepend 0.5 seconds of silence
+    let silence_16k = vec![0.0; (0.3 * 16000.0) as usize]; // 8000 samples for 16kHz
+
+    ref_audio_16k.splice(0..0, silence_16k);
+
+    // Convert to Array2
     Ok((
         Array2::from_shape_vec((1, ref_audio_16k.len()), ref_audio_16k)?,
         Array2::from_shape_vec((1, ref_audio_32k.len()), ref_audio_32k)?,
     ))
-}
-
-fn resample_audio(input: Vec<f32>, in_rate: u32, out_rate: u32) -> Result<Vec<f32>, GSVError> {
-    if in_rate == out_rate {
-        return Ok(input);
-    }
-
-    // Calculate the resampling ratio and output length
-    let ratio = in_rate as f64 / out_rate as f64; // Use f64 for better precision
-    let out_len = ((input.len() as f64 / ratio).ceil() as usize).max(1);
-
-    // Pre-allocate output vector
-    let mut output = Vec::with_capacity(out_len);
-
-    // Perform linear interpolation
-    for i in 0..out_len {
-        let src_idx = i as f64 * ratio;
-        let idx_floor = src_idx.floor() as usize;
-
-        // Handle boundary conditions
-        let sample = if idx_floor >= input.len() {
-            // Beyond input length, use last sample or zero
-            *input.last().unwrap_or(&0.0)
-        } else if idx_floor + 1 < input.len() {
-            // Linear interpolation between two samples
-            let frac = (src_idx - idx_floor as f64) as f32;
-            input[idx_floor] * (1.0 - frac) + input[idx_floor + 1] * frac
-        } else {
-            // At the last sample, no interpolation possible
-            input[idx_floor]
-        };
-
-        output.push(sample);
-    }
-
-    Ok(output)
 }

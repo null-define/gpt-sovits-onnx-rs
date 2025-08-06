@@ -21,7 +21,7 @@ pub enum ZhMode {
     Cantonese,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ZhSentence {
     pub phone_ids: Vec<i64>,
     pub phones: Vec<G2PWOut>,

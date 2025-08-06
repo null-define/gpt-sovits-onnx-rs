@@ -4,6 +4,20 @@ use rand::rngs::ThreadRng;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+/// Finds the token with the highest logit value (argmax).
+pub fn argmax(logits: &[f32]) -> i64 {
+    let mut max_logit = f32::NEG_INFINITY;
+    let mut max_idx = 0;
+
+    for (idx, &logit) in logits.iter().enumerate() {
+        if logit > max_logit {
+            max_logit = logit;
+            max_idx = idx;
+        }
+    }
+    max_idx as i64
+}
+
 // Sampling parameters (unchanged)
 #[derive(Clone, Copy, Debug)]
 pub struct SamplingParams {
@@ -136,20 +150,6 @@ impl Sampler {
         }
     }
 
-    /// Finds the token with the highest logit value (argmax).
-    fn argmax(logits: &[f32]) -> i64 {
-        let mut max_logit = f32::NEG_INFINITY;
-        let mut max_idx = 0;
-
-        for (idx, &logit) in logits.iter().enumerate() {
-            if logit > max_logit {
-                max_logit = logit;
-                max_idx = idx;
-            }
-        }
-        max_idx as i64
-    }
-
     /// Main sampling method with performance optimizations.
     pub fn sample(
         &mut self,
@@ -161,7 +161,7 @@ impl Sampler {
 
         // Optimized path for greedy decoding (argmax).
         if params.temperature == 0.0 {
-            return Self::argmax(logits);
+            return argmax(logits);
         }
 
         Self::apply_temperature(logits, params.temperature);
@@ -170,7 +170,7 @@ impl Sampler {
         let mut candidates: Vec<(usize, f32)> = self.probs.iter().copied().enumerate().collect();
 
         if candidates.is_empty() {
-            return Self::argmax(logits);
+            return argmax(logits);
         }
 
         // --- Top-K Filtering (Optimized O(V) selection) ---
@@ -210,7 +210,7 @@ impl Sampler {
                 // Return the highest probability candidate before this step.
                 return candidates
                     .first()
-                    .map_or_else(|| Self::argmax(logits), |&(idx, _)| idx as i64);
+                    .map_or_else(|| argmax(logits), |&(idx, _)| idx as i64);
             }
         };
 

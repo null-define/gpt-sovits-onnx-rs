@@ -44,10 +44,12 @@ tokenizers = { version = "0.20.0", default-features = false, features = [
 jni = { version = "0.21", optional = true }
 once_cell = "1.21.3"
 clap = { version = "4.5", features = ["derive"] }
-rustfft = "6.2.0"
 rand = "0.9.1"
 smallvec = "1.15"
 regex = "1.11"
+rubato = "0.16"                                                     # For audio resampling
+unicode-segmentation = "1.10.1"
+
 [features]
 jni = ["dep:jni"] # Enables JNI and dynamic ONNX loading for Android
 

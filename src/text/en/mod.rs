@@ -1,7 +1,7 @@
-use anyhow::Result;
-use std::borrow::Cow;
-use log::debug;
 use crate::text::{en::g2p_en::G2pEn, phone_symbol::get_phone_symbol};
+use anyhow::Result;
+use log::debug;
+use std::borrow::Cow;
 
 pub mod g2p_en;
 
@@ -20,7 +20,7 @@ impl std::fmt::Debug for EnWord {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EnSentence {
     pub phone_ids: Vec<i64>,
     pub phones: Vec<Cow<'static, str>>,
@@ -34,27 +34,34 @@ impl EnSentence {
         self.phone_ids.clear();
         self.word2ph.clear();
         for word in &self.text {
-             let mut ph_count_for_word = 0;
-            let ph_count = match word {
+            match word {
                 EnWord::Word(w) => {
                     let phonemes = g2p_en.g2p(w)?;
-                    let count = phonemes.len() as i32;
+                    let mut cnt = 0;
                     for ph in phonemes {
                         self.phones.push(Cow::Owned(ph.clone()));
                         self.phone_ids.push(get_phone_symbol(&ph));
+                        cnt += 1;
+                        if ph.contains("0")
+                            || ph.contains("1")
+                            || ph.contains("2")
+                            || ph.contains("3")
+                            || ph.contains("4")
+                        {
+                            self.word2ph.push(cnt);
+                            cnt = 0;
+                        }
                     }
-                    count
+                    if cnt > 0 {
+                        self.word2ph.push(cnt);
+                    }
                 }
                 EnWord::Punctuation(p) => {
                     self.phones.push(Cow::Borrowed(p));
                     self.phone_ids.push(get_phone_symbol(p));
-                    1
+                    self.word2ph.push(1);
                 }
             };
-            ph_count_for_word += ph_count;
-            if ph_count_for_word > 0 {
-                self.word2ph.push(ph_count_for_word);
-            }
         }
         debug!("EnSentence phones: {:?}", self.phones);
         debug!("EnSentence phone_ids: {:?}", self.phone_ids);
