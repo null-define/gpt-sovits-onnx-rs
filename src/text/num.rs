@@ -1,6 +1,6 @@
 use std::collections::LinkedList;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use pest::Parser;
 
 use crate::text::Lang;
@@ -56,7 +56,7 @@ pub mod zh {
     fn parse_integer(pair: Pair<Rule>, dst_string: &mut String, unit: bool) -> Result<()> {
         assert_eq!(pair.as_rule(), Rule::integer);
 
-        let digits: Vec<_> = pair.into_inner().rev().collect();
+        let digits: Vec<_> = pair.into_inner().collect(); // Remove .rev() to process left-to-right
         let mut result = String::new();
         let mut has_non_zero = false;
 
@@ -74,19 +74,24 @@ pub mod zh {
                 "9" => "九",
                 _ => bail!("Unknown digit: {:?}", pair.as_str()),
             };
-            let u = if i % 4 != 0 {
-                UNITS[i % 4]
+            // Calculate the position from most significant digit
+            let pos = digits.len() - 1 - i;
+            let u = if pos % 4 != 0 {
+                UNITS[pos % 4]
             } else {
-                BASE_UNITS[(i / 4) % 4]
+                BASE_UNITS[(pos / 4) % 4]
             };
 
             if txt != "零" {
                 has_non_zero = true;
-                result.push_str(txt);
+                // Skip "一" for tens place (pos == 1) when the digit is 1
+                if !(pos == 1 && txt == "一") {
+                    result.push_str(txt);
+                }
                 if unit {
                     result.push_str(u);
                 }
-            } else if has_non_zero && unit {
+            } else if has_non_zero && unit && pos > 0 {
                 result.push_str(txt);
             }
         }
@@ -408,8 +413,7 @@ pub mod en {
             match pair.as_rule() {
                 Rule::num => parse_num(pair, dst_string)?,
                 Rule::pn => parse_pn(pair, dst_string)?,
-                Rule::word => {
-                }
+                Rule::word => {}
                 _ => bail!("Unknown rule in signs: {:?}", pair.as_str()),
             }
         }

@@ -326,10 +326,11 @@ impl TTSModel {
             valid_len = new_valid_len;
 
             if idx >= 1500 || argmax == T2S_DECODER_EOS {
-                let sliced = y_vec[prefix_len + 1..]
+                let mut sliced = y_vec[(y_vec.len() - idx + 1)..(y_vec.len() - 1)]
                     .iter()
                     .map(|&i| if i == T2S_DECODER_EOS { 0 } else { i })
                     .collect::<Vec<i64>>();
+                sliced.push(0);
                 debug!(
                     "t2s final len: {}, prefix_len: {}",
                     sliced.len(),
@@ -365,7 +366,6 @@ impl TTSModel {
             .as_ref()
             .ok_or(GSVError::from("Reference data not initialized"))?;
         let spec = self.output_spec;
-        let text = ensure_punctuation(text);
         let time = SystemTime::now();
         let texts_and_seqs = self.text_processor.get_phone_and_bert(&text, lang_id)?;
         debug!("g2pw and preprocess time: {:?}", time.elapsed()?);
@@ -546,7 +546,7 @@ impl TTSModel {
 }
 
 fn ensure_punctuation(text: &str) -> String {
-    if !text.ends_with(['。', '.']) {
+    if !text.ends_with(['。', '！', '？', '；', '.', '!', '?', ';']) {
         text.to_string() + "。"
     } else {
         text.to_string()
@@ -609,10 +609,12 @@ fn read_and_resample_audio<P: AsRef<Path>>(
     let mut ref_audio_16k = resample_audio(audio_samples.clone(), spec.sample_rate, 16000)?;
     let ref_audio_32k = resample_audio(audio_samples, spec.sample_rate, 32000)?;
 
-    // Prepend 0.5 seconds of silence
+    // Prepend 0.3 seconds of silence
     let silence_16k = vec![0.0; (0.3 * 16000.0) as usize]; // 8000 samples for 16kHz
+    // let silence_32k = vec![0.0; (0.3 * 32000.0) as usize]; // 8000 samples for 16kHz
 
     ref_audio_16k.splice(0..0, silence_16k);
+    // ref_audio_32k.splice(0..0, silence_32k);
 
     // Convert to Array2
     Ok((
