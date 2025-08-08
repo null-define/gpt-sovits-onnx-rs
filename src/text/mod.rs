@@ -76,7 +76,7 @@ pub fn split_text(text: &str) -> Vec<String> {
         if is_end_punctuation {
             // For non-Chinese text, check if next character is lowercase letter
             // (which would indicate abbreviation like "Dr. Smith")
-            if !str_is_chinese(&current) {
+            if matches!(c, '.' | '!' | '?' | ';') {
                 if let Some(&next_char) = chars.peek() {
                     if next_char.is_lowercase() {
                         continue;
@@ -439,59 +439,34 @@ impl PhoneBuilder {
             {
                 self.push_en_word(t);
             } else {
-                // Handle mixed-language tokens
-                let mut mixed = String::new();
-                let mut current_lang = None;
-                let mut chars = t.chars().peekable();
-
-                while let Some(c) = chars.next() {
-                    let is_chinese = str_is_chinese(&c.to_string());
-                    let is_english = c.is_ascii_alphabetic() || c == '\'' || c == '-';
-                    let is_numeric = is_numeric(&c.to_string());
-
-                    let token_lang = if is_chinese {
-                        Some(Lang::Zh)
-                    } else if is_english {
-                        Some(Lang::En)
-                    } else if is_numeric {
-                        Some(self.sentence_lang)
-                    } else {
-                        None
-                    };
-
-                    if let Some(lang) = token_lang {
-                        if current_lang.is_none() {
-                            current_lang = Some(lang);
-                        } else if current_lang.unwrap() != lang {
-                            if !mixed.is_empty() {
-                                match current_lang.unwrap() {
-                                    Lang::Zh => self.push_zh_word(&mixed),
-                                    Lang::En => self.push_en_word(&mixed),
-                                }
-                                mixed.clear();
+                // Handle mixed-language tokens by re-tokenizing the mixed token
+                for sub_token in TOKEN_REGEX.find_iter(t) {
+                    let sub_token_str = sub_token.as_str();
+                    if let Some(p) = parse_punctuation(sub_token_str) {
+                        self.push_punctuation(p);
+                    } else if is_numeric(sub_token_str) {
+                        let ns = NumSentence {
+                            text: sub_token_str.to_owned(),
+                            lang: self.sentence_lang,
+                        };
+                        let txt = match ns.to_lang_text() {
+                            Ok(txt) => txt,
+                            Err(e) => {
+                                warn!("Failed to process numeric token '{}': {}", sub_token_str, e);
+                                sub_token_str.to_string()
                             }
-                            current_lang = Some(lang);
+                        };
+                        match self.sentence_lang {
+                            Lang::Zh => self.push_zh_word(&txt),
+                            Lang::En => self.push_en_word(&txt),
                         }
-                        mixed.push(c);
-                    } else {
-                        if !mixed.is_empty() {
-                            match current_lang.unwrap_or(self.sentence_lang) {
-                                Lang::Zh => self.push_zh_word(&mixed),
-                                Lang::En => self.push_en_word(&mixed),
-                            }
-                            mixed.clear();
-                        }
-                        if let Some(p) = parse_punctuation(&c.to_string()) {
-                            self.push_punctuation(p);
-                        }
-                        current_lang = None;
-                    }
-                }
-
-                if !mixed.is_empty() {
-                    match current_lang.unwrap_or(self.sentence_lang) {
-                        Lang::Zh => self.push_zh_word(&mixed),
-                        Lang::En => self.push_en_word(&mixed),
+                    } else if str_is_chinese(sub_token_str) {
+                        self.push_zh_word(sub_token_str);
+                    } else if sub_token_str
+                        .chars()
+                        .all(|c| c.is_ascii_alphabetic() || c == '\'' || c == '-')
+                    {
+                        self.push_en_word(sub_token_str);
                     }
                 }
             }
