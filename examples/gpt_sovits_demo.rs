@@ -58,6 +58,12 @@ impl TimingStats {
 }
 
 fn create_model(assets_dir: &Path) -> Result<TTSModel, GSVError> {
+    // check the path exists
+    if !assets_dir.exists() {
+        return Err(GSVError::FileNotFound(format!(
+            "Assets directory not found: {:?}", assets_dir
+        )));
+    }
     TTSModel::new(
         assets_dir.join("custom_vits.onnx"),
         assets_dir.join("ssl.onnx"),
@@ -67,6 +73,10 @@ fn create_model(assets_dir: &Path) -> Result<TTSModel, GSVError> {
         Some(assets_dir.join("bert.onnx")),
         Some(assets_dir.join("g2pW.onnx")),
         Some(assets_dir.join("g2p_en")), // assume you have g2p en mode downloaded, can be none
+        match assets_dir.join("sv.onnx").exists() {
+            true => Some(assets_dir.join("sv.onnx")),
+            false => None,
+        },
     )
 }
 

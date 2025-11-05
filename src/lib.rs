@@ -22,6 +22,7 @@ mod error;
 mod logits_sampler;
 mod onnx_builder;
 mod text;
+mod sv;
 
 use onnx_builder::create_onnx_cpu_session;
 pub use text::LangId;
@@ -32,7 +33,7 @@ use text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW};
 pub use error::GSVError;
 pub use logits_sampler::{SamplingParams, SamplingParamsBuilder};
 
-use crate::onnx_builder::BIG_CORES;
+use crate::{onnx_builder::BIG_CORES, sv::SvModel};
 
 const T2S_DECODER_EOS: i64 = 1024;
 const VOCAB_SIZE: usize = 1025;
@@ -46,6 +47,7 @@ pub struct ReferenceData {
     ref_bert: Array2<f32>,
     ref_audio_32k: Array2<f32>,
     ssl_content: ArrayBase<OwnedRepr<f32>, IxDyn>,
+    sv_emb: Option<ArrayD<f32>>,
 }
 
 pub struct TTSModel {
@@ -55,6 +57,7 @@ pub struct TTSModel {
     t2s_encoder: Session,
     t2s_fs_decoder: Session,
     t2s_s_decoder: Session,
+    sv: Option<SvModel>,
     ref_data: Option<ReferenceData>,
     num_layers: usize,
     output_spec: WavSpec,
@@ -81,6 +84,7 @@ impl TTSModel {
         bert_path: Option<P>,
         g2pw_path: Option<P>,
         g2p_en_path: Option<P>,
+        sv_path: Option<P>,
     ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
         info!("use cpu cores: {:?}", BIG_CORES.clone());
@@ -119,6 +123,10 @@ impl TTSModel {
             t2s_encoder: create_onnx_cpu_session(t2s_encoder_path)?,
             t2s_fs_decoder: create_onnx_cpu_session(t2s_fs_decoder_path)?,
             t2s_s_decoder: create_onnx_cpu_session(t2s_s_decoder_path)?,
+            sv: match sv_path {
+                Some(p) => Some(SvModel::new(create_onnx_cpu_session(p)?)),
+                None => None,
+            },
             ref_data: None,
             num_layers: NUM_LAYERS,
             output_spec,
@@ -172,9 +180,22 @@ impl TTSModel {
         let (ref_audio_16k, ref_audio_32k) = read_and_resample_audio(&reference_audio_path)?;
         let ssl_content = self.process_ssl(&ref_audio_16k)?;
 
+        let sv_emb =  match &mut self.sv {
+            Some(sv_model) => {
+                let sv_emb = sv_model.infer(&ref_audio_16k.row(0).to_owned())?;
+                debug!("SV embedding shape: {:?}", sv_emb.shape());
+                Some(sv_emb)
+            }
+            None => {
+                debug!("SV model not provided, skipping SV embedding extraction");
+                None
+            }
+        };
+
         self.ref_data = Some(ReferenceData {
             ref_seq,
             ref_bert,
+            sv_emb,
             ref_audio_32k,
             ssl_content,
         });
@@ -493,12 +514,21 @@ impl TTSModel {
         debug!("T2S S Decoder all time: {:?}", time.elapsed()?);
 
         let time = SystemTime::now();
-        let outputs = self.sovits.run(inputs![
-            "text_seq" => TensorRef::from_array_view(&text_seq)?,
-            "pred_semantic" => TensorRef::from_array_view(&pred_semantic)?,
-            "ref_audio" => TensorRef::from_array_view(&ref_data.ref_audio_32k)?
-        ])?;
-        debug!("SoVITS time: {:?}", time.elapsed()?);
+        // use sv_emb if have
+        let outputs = match &ref_data.sv_emb {
+            Some(sv_emb) => self.sovits.run(inputs![
+                "text_seq" => TensorRef::from_array_view(&text_seq)?,
+                "pred_semantic" => TensorRef::from_array_view(&pred_semantic)?,
+                "ref_audio" => TensorRef::from_array_view(&ref_data.ref_audio_32k)?,
+                "sv_emb" => TensorRef::from_array_view(sv_emb)?,
+            ])?,
+            None => self.sovits.run(inputs![
+                "text_seq" => TensorRef::from_array_view(&text_seq)?,
+                "pred_semantic" => TensorRef::from_array_view(&pred_semantic)?,
+                "ref_audio" => TensorRef::from_array_view(&ref_data.ref_audio_32k)?,
+            ])?,
+        };
+        debug!("SoVITS all time: {:?}", time.elapsed()?);
         let output_audio = outputs["audio"].try_extract_array::<f32>()?;
         let (mut audio, _) = output_audio.into_owned().into_raw_vec_and_offset();
         for sample in &mut audio {

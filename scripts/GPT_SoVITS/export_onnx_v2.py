@@ -13,8 +13,18 @@ from module.models_onnx import SynthesizerTrn, symbols_v1, symbols_v2
 from AR.models.t2s_lightning_module_onnx import Text2SemanticLightningModule
 import argparse
 from torch import Tensor
+import torch.nn.functional as F
 
 from AR.models.t2s_model_onnx import sample
+from sv import SV
+import kaldi as Kaldi
+
+sv_cn_model = None
+
+
+def init_sv_cn(device, is_half):
+    global sv_cn_model
+    sv_cn_model = SV(device, is_half)
 
 EOS = 1024
 
@@ -192,14 +202,14 @@ class T2SModel(nn.Module):
         
 
 class VitsModel(nn.Module):
-    def __init__(self, vits_path):
+    def __init__(self, vits_path, version="v2"):
         super().__init__()
         dict_s2 = torch.load(vits_path, map_location="cpu", weights_only=False)
         self.hps = dict_s2["config"]
         if dict_s2['weight']['enc_p.text_embedding.weight'].shape[0] == 322:
             self.hps["model"]["version"] = "v1"
         else:
-            self.hps["model"]["version"] = "v2"
+            self.hps["model"]["version"] = version
         
         self.hps = DictToAttrRecursive(self.hps)
         self.hps.model.semantic_frame_rate = "25hz"
@@ -213,7 +223,7 @@ class VitsModel(nn.Module):
         self.vq_model.load_state_dict(dict_s2["weight"], strict=False)
         self.vq_model.dec.remove_weight_norm()
         
-    def forward(self, text_seq, pred_semantic, ref_audio):
+    def forward(self, text_seq, pred_semantic, ref_audio, sv_emb=None):
         refer = spectrogram_torch(
             ref_audio,
             self.hps.data.filter_length,
@@ -221,35 +231,76 @@ class VitsModel(nn.Module):
             self.hps.data.win_length,
             center=False
         )
-        return self.vq_model(pred_semantic, text_seq, refer)[0, 0]
+        return self.vq_model(pred_semantic, text_seq, refer, sv_emb=sv_emb)[0, 0]
 
 class GptSoVits(nn.Module):
-    def __init__(self, vits, t2s):
+    def __init__(self, vits, t2s, sv_model=None, version="v2"):
         super().__init__()
         self.vits = vits
         self.t2s = t2s
+        self.sv_model = sv_model
+        self.version = version
     
     def forward(self, ref_seq, text_seq, ref_bert, text_bert, ref_audio, ssl_content):
         pred_semantic = self.t2s(ref_seq, text_seq, ref_bert, text_bert, ssl_content)
-        return self.vits(text_seq, pred_semantic, ref_audio)
+        if self.version == "v2Pro":
+            audio_16k = torchaudio.functional.resample(ref_audio, self.vits.hps.data.sampling_rate, 16000).float()
+            audio_feature = Kaldi.fbank(audio_16k, num_mel_bins=80, sample_frequency=16000, dither=0)
+            sv_emb = self.sv_model(audio_feature)
+            return self.vits(text_seq, pred_semantic, ref_audio, sv_emb=sv_emb)
+        else:
+            return self.vits(text_seq, pred_semantic, ref_audio)
 
     def export(self, ref_seq, text_seq, ref_bert, text_bert, ref_audio, ssl_content, project_name):
         self.t2s.export(ref_seq, text_seq, ref_bert, text_bert, ssl_content, project_name)
         pred_semantic = self.t2s(ref_seq, text_seq, ref_bert, text_bert, ssl_content)
-        torch.onnx.export(
-            self.vits,
-            (text_seq, pred_semantic, ref_audio),
-            f"onnx/{project_name}/{project_name}_vits.onnx",
-            input_names=["text_seq", "pred_semantic", "ref_audio"],
-            output_names=["audio"],
-            dynamic_axes={
-                "text_seq": {1: "text_length"},
-                "pred_semantic": {2: "pred_length"},
-                "ref_audio": {1: "audio_length"},
-            },
-            opset_version=20,
-            verbose=False
-        )
+        if self.version == "v2Pro":
+            dummy_audio_16k = torchaudio.functional.resample(ref_audio, self.vits.hps.data.sampling_rate, 16000).float()
+            audio_feature = Kaldi.fbank(dummy_audio_16k, num_mel_bins=80, sample_frequency=16000, dither=0)
+            print("Exporting SV model...")
+            print(audio_feature.shape)
+            sv_emb = self.sv_model(audio_feature)
+            torch.onnx.export(
+                self.sv_model,
+                audio_feature,
+                f"onnx/{project_name}/sv.onnx",
+                input_names=["audio_feature"],
+                output_names=["sv_emb"],
+                dynamic_axes={
+                    "audio_feature": {0: "length"},
+                },
+                opset_version=20,
+                verbose=False,
+            )
+            torch.onnx.export(
+                self.vits,
+                (text_seq, pred_semantic, ref_audio, sv_emb),
+                f"onnx/{project_name}/{project_name}_vits.onnx",
+                input_names=["text_seq", "pred_semantic", "ref_audio", "sv_emb"],
+                output_names=["audio"],
+                dynamic_axes={
+                    "text_seq": {1: "text_length"},
+                    "pred_semantic": {2: "pred_length"},
+                    "ref_audio": {1: "audio_length"},
+                },
+                opset_version=20,
+                verbose=False
+            )
+        else:
+            torch.onnx.export(
+                self.vits,
+                (text_seq, pred_semantic, ref_audio),
+                f"onnx/{project_name}/{project_name}_vits.onnx",
+                input_names=["text_seq", "pred_semantic", "ref_audio"],
+                output_names=["audio"],
+                dynamic_axes={
+                    "text_seq": {1: "text_length"},
+                    "pred_semantic": {2: "pred_length"},
+                    "ref_audio": {1: "audio_length"},
+                },
+                opset_version=20,
+                verbose=False
+            )
 
 class SSLModel(nn.Module):
     def __init__(self):
@@ -260,6 +311,38 @@ class SSLModel(nn.Module):
 
     def forward(self, ref_audio_16k):
         return self.ssl(ref_audio_16k)["last_hidden_state"].transpose(1, 2)
+    
+
+
+class ExportERes2NetV2(nn.Module): # SV model
+    def __init__(self, sv_cn_model: SV):
+        super(ExportERes2NetV2, self).__init__()
+        self.bn1 = sv_cn_model.embedding_model.bn1
+        self.conv1 = sv_cn_model.embedding_model.conv1
+        self.layer1 = sv_cn_model.embedding_model.layer1
+        self.layer2 = sv_cn_model.embedding_model.layer2
+        self.layer3 = sv_cn_model.embedding_model.layer3
+        self.layer4 = sv_cn_model.embedding_model.layer4
+        self.layer3_ds = sv_cn_model.embedding_model.layer3_ds
+        self.fuse34 = sv_cn_model.embedding_model.fuse34
+
+    # audio_16k.shape: [1,N]
+    def forward(self, audio_16k):
+        # 这个 fbank 函数有一个 cache, 不过不要紧，它跟 audio_16k 的长度无关
+        # 只跟 device 和 dtype 有关
+        x = torch.stack([audio_16k])
+
+        x = x.permute(0, 2, 1)  # (B,T,F) => (B,F,T)
+        x = x.unsqueeze_(1)
+        out = F.relu(self.bn1(self.conv1(x)))
+        out1 = self.layer1(out)
+        out2 = self.layer2(out1)
+        out3 = self.layer3(out2)
+        out4 = self.layer4(out3)
+        out3_ds = self.layer3_ds(out3)
+        fuse_out34 = self.fuse34(out4, out3_ds)
+        return fuse_out34.flatten(start_dim=1, end_dim=2).mean(-1)
+
 
 
 
@@ -328,9 +411,13 @@ def export_bert(project_name):
 
 
 def export(vits_path, gpt_path, project_name, vits_model="v2"):
-    vits = VitsModel(vits_path)
+    vits = VitsModel(vits_path, version=vits_model)
     gpt = T2SModel(gpt_path, vits)
-    gpt_sovits = GptSoVits(vits, gpt)
+    sv_model = None
+    if vits_model == "v2Pro":
+        init_sv_cn("cpu", False)
+        sv_model = ExportERes2NetV2(sv_cn_model)
+    gpt_sovits = GptSoVits(vits, gpt, sv_model=sv_model, version=vits_model)
     ssl = SSLModel()
     ref_seq = torch.LongTensor([cleaned_text_to_sequence(["n", "i2", "h", "ao3", "a1", ",", "w", "o3", "sh", "i4", "zh", "i4", "n", "eng2", "y", "u3", "y", "in1", "zh", "u4", "sh", "ou3"], version=vits_model)])
     text_seq = torch.LongTensor([cleaned_text_to_sequence(["w", "o3", "sh", "i4", "b", "ai2", "y", "e4", "w", "o3", "sh", "i4", "b", "ai2", "y", "e4", "w", "o3", "sh", "i4", "b", "ai2", "y", "e4"], version=vits_model)])
@@ -380,6 +467,7 @@ def export(vits_path, gpt_path, project_name, vits_model="v2"):
         "Dict": "BasicDict",
         "BertPath": "chinese-roberta-wwm-ext-large",
         "AddBlank": False,
+        "Version": vits_model,
     }
 
     with open(f"onnx/{project_name}.json", 'w') as MoeVsConfFile:
@@ -390,6 +478,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export model to ONNX")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the model directory")
     parser.add_argument("--export_name", type=str, required=True, help="Project Name for the exported model")
+    parser.add_argument("--version", type=str, default="v2", help="vits model version: v2 or v2Pro")
     args = parser.parse_args()
 
     try:
@@ -399,6 +488,6 @@ if __name__ == "__main__":
     gpt_path = os.path.join(args.model_path, "gpt.ckpt")
     vits_path = os.path.join(args.model_path, "sovits.pth")
     with torch.no_grad():
-        export(vits_path, gpt_path, args.export_name)
+        export(vits_path, gpt_path, args.export_name, args.version)
 
     # soundfile.write("out.wav", a, vits.hps.data.sampling_rate)

@@ -19,6 +19,7 @@
 -----
 
 ## 项目状态与已知问题
+2025-11-06: 初步支持V2Pro模型，详情请见转换脚本。目前V2Pro的精度和速度仍未优化，且android平台仍未验证。
 
 2025-07-12: 将部分onnx模型代码同步到和pytorch一致，简化了一部分模型逻辑，并修复了library中由于缺少空白声音导致的吸气问题，如果提示找不到输出，请更新hf上的新模型，或者重新转换自己的模型。
 
@@ -95,12 +96,17 @@ https://github.com/user-attachments/assets/158fafd4-e2c9-416d-92c8-8e4340220de8
 
 请参考 `scripts` 目录下的说明文档：[scripts/README.md](scripts/README.md)。
 
-### 2\. x86 平台构建 (Linux/Windows/macOS)
+### 2\. x86 平台构建和运行 (Linux/Windows/macOS)
 
 直接使用 Cargo 即可完成编译：
 
 ```bash
 cargo build --release
+```
+
+使用如下命令可以运行命令行demo，该demo会自动根据模型路径下转换的模型文件，启用v2或v2Pro模型：
+```bash
+RUST_LOG=Debug ./target/release/examples/gpt_sovits_demo --model-path /Users/neko/projects/ --text "你好啊，我最喜欢你了"
 ```
 
 ### 3\. Android 平台构建

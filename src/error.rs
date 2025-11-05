@@ -16,6 +16,7 @@ pub enum GSVError {
     Hound(HoundError),
     AnyHow(anyhow::Error),
     Common(String),
+    FileNotFound(String),
 }
 
 impl Error for GSVError {}
@@ -31,6 +32,7 @@ impl Display for GSVError {
             Self::Hound(e) => Display::fmt(e, f),
             Self::AnyHow(e) => Display::fmt(e, f),
             Self::Common(e) => Display::fmt(e, f),
+            Self::FileNotFound(e) => Display::fmt(e, f),
         }
     }
 }
