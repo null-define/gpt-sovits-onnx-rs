@@ -1,3 +1,4 @@
+// preprocessor/utils.rs
 use std::collections::HashMap;
 
 use ndarray::{ArrayView, IntoDimension, IxDyn};
@@ -17,7 +18,6 @@ pub static MONO_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_mo
 pub static POLY_CHARS_DIST_STR: &str = include_str!("../../resource/g2pw/dict_poly_chars.json");
 pub static DEFAULT_ZH_WORD_DICT: &str = include_str!("../../resource/zh_word_dict.json");
 pub static BERT_TOKENIZER: &str = include_str!("../../resource/g2pw_tokenizer.json");
-
 
 pub fn load_mono_chars() -> HashMap<char, MonoChar> {
     if let Ok(dir) = std::env::var("G2PW_DIST_DIR") {
@@ -52,6 +52,21 @@ pub fn str_is_chinese(s: &str) -> bool {
         }
     }
     r
+}
+
+pub fn str_is_numeric(s: &str) -> bool {
+    s.chars().all(|c| c.is_ascii_digit())
+}
+pub fn str_is_punctuation(s: &str) -> bool {
+    let punctuations = [
+        ",", ".", "!", "?", ";", ":", "'", "\"", "(", ")", "[", "]", "<", ">", "-", "~", "...",
+        "·", "、", "$", "/",
+    ];
+    punctuations.contains(&s)
+}
+pub fn is_numeric_or_punctuation(s: &str) -> bool {
+    s.chars()
+        .all(|c| c.is_ascii_digit() || str_is_punctuation(&c.to_string()))
 }
 
 // Finds the index of the maximum value in a 2D tensor

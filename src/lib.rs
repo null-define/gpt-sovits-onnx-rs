@@ -21,14 +21,14 @@ mod cpu_info;
 mod error;
 mod logits_sampler;
 mod onnx_builder;
-mod text;
+mod preprocessor;
 mod sv;
 
 use onnx_builder::create_onnx_cpu_session;
-pub use text::LangId;
+pub use preprocessor::LangId;
 
 use logits_sampler::Sampler;
-use text::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW};
+use preprocessor::{TextProcessor, bert::BertModel, en::g2p_en::G2pEn, zh::g2pw::G2PW};
 
 pub use error::GSVError;
 pub use logits_sampler::{SamplingParams, SamplingParamsBuilder};
@@ -382,6 +382,7 @@ impl TTSModel {
         ),
         GSVError,
     > {
+        debug!("g2pw synth start");
         let ref_data = self
             .ref_data
             .as_ref()

@@ -1,4 +1,4 @@
-use crate::text::{en::g2p_en::G2pEn, phone_symbol::get_phone_symbol};
+use crate::preprocessor::{en::g2p_en::G2pEn, phone_symbol::get_phone_symbol};
 use anyhow::Result;
 use log::debug;
 use std::borrow::Cow;

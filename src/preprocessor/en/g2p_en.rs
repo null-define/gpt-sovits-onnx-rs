@@ -15,7 +15,7 @@ use ort::{
 };
 use tokenizers::Tokenizer;
 
-use crate::{onnx_builder::create_onnx_cpu_session, text::dict};
+use crate::{onnx_builder::create_onnx_cpu_session, preprocessor::dict};
 
 static MINI_BART_G2P_TOKENIZER: &str =
     include_str!("../../../resource/tokenizer.mini-bart-g2p.json");

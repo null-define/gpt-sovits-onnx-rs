@@ -2,7 +2,7 @@
 use anyhow::Result;
 use log::{debug, warn};
 
-use crate::text::{
+use crate::preprocessor::{
     phone_symbol::get_phone_symbol,
     zh::{
         g2pw::{G2PW, G2PWOut},

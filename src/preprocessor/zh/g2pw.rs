@@ -8,7 +8,7 @@ use std::{
 };
 use tokenizers::Tokenizer;
 
-use crate::{onnx_builder::create_onnx_cpu_session, text::utils::*};
+use crate::{onnx_builder::create_onnx_cpu_session, preprocessor::utils::*};
 pub static LABELS: &str = include_str!("../../../resource/g2pw/dict_poly_index_list.json");
 
 lazy_static::lazy_static! {

@@ -2,7 +2,7 @@ use log::debug;
 use regex::Regex;
 use std::collections::HashSet;
 
-use crate::text::zh::jyutping_list::get_jyutping_list;
+use crate::preprocessor::zh::jyutping_list::get_jyutping_list;
 
 // Placeholder for cn2an functionality
 fn cn2an_transform(text: &str) -> String {
@@ -63,7 +63,7 @@ fn get_jyutping(text: &str) -> Vec<String> {
     debug!("jyutping {:?}", syllables);
     let mut jyutping_array = Vec::new();
 
-     for (word, syllable) in syllables {
+    for (word, syllable) in syllables {
         if punct_pattern.is_match(&word) {
             let puncts: Vec<_> = word.chars().map(|c| c.to_string()).collect();
             for punct in puncts {

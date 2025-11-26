@@ -6,7 +6,10 @@ use ndarray::{Array1, Array2, Axis, concatenate};
 use ort::{inputs, value::Tensor};
 use tokenizers::Tokenizer;
 
-use crate::{onnx_builder::create_onnx_cpu_session, text::utils::BERT_TOKENIZER};
+use crate::{
+    onnx_builder::create_onnx_cpu_session,
+    preprocessor::{lang, utils::BERT_TOKENIZER},
+};
 
 #[derive(Debug)]
 pub struct BertModel {
@@ -31,8 +34,10 @@ impl BertModel {
         text: &str,
         word2ph: &[i32],
         total_phones: usize,
+        lang: lang::Lang,
     ) -> anyhow::Result<Array2<f32>> {
-        if self.model.is_some() && self.tokenizers.is_some() {
+        if self.model.is_some() && self.tokenizers.is_some() && lang == lang::Lang::Zh {
+            let text = &text.replace(",", ".");
             let tmp = self.get_real_bert(text, word2ph)?;
             debug!("use real bert, {}", text);
             if tmp.shape()[0] != total_phones {

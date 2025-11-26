@@ -1,9 +1,10 @@
+// preprocessor/num.rs
 use std::collections::LinkedList;
 
 use anyhow::{Result, bail};
 use pest::Parser;
 
-use crate::text::Lang;
+use crate::preprocessor::Lang;
 
 #[derive(pest_derive::Parser)]
 #[grammar = "resource/rule.pest"]
@@ -554,7 +555,6 @@ impl NumSentence {
 
 pub fn is_numeric(p: &str) -> bool {
     p.chars().any(|c| c.is_numeric())
-        || p.contains(&NUM_OP)
         || p.to_lowercase().contains(&[
             'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π', 'ρ',
             'σ', 'ς', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
